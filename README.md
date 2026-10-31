@@ -27,19 +27,54 @@ data/
 tests/
 ```
 
-## Spécifications des paliers
+## Palier 1 : architecture
 
-Palier 1, Palier 2 et Palier 3 : les spécifications détaillées seront ajoutées ici à partir de l'énoncé officiel de l'exercice (RodiumAi Bootcamp, "Exercice · Boutique intelligente, le vendeur WhatsApp"). Cette section est à compléter.
+Le Palier 1 implémente un agent unique (`SingleAgent`) qui enchaîne plusieurs outils dans une boucle de raisonnement et d'action, avec une limite de 6 étapes. Un modèle à règles (`rule-based-llm`) remplace le LLM pour rendre le scénario reproductible hors ligne. Le client client OpenAI (`openai-client.ts`) est prévu pour le fonctionnement réel.
 
-- Palier 1 : (à compléter)
-- Palier 2 : (à compléter)
-- Palier 3 : (à compléter)
+Modules :
+
+- `src/data/catalog.ts` : chargement du catalogue (`data/catalog/products.json`) et des zones de livraison (`data/catalog/delivery-zones.json`).
+- `src/tools/` : registre d'outils (`index.ts`), avec validation des arguments (`validation.ts`) et utilitaires de texte (`text.ts`).
+- `src/agents/single-agent.ts` : boucle agent (pensée, action, observation, réponse finale), limite de 6 étapes.
+- `src/agents/rule-based-llm.ts` : LLM déterministe pour la démo et les tests.
+- `src/agents/trace.ts` : rendu Markdown de la trace d'exécution.
+- `src/types/index.ts` : types partagés (résultats d'outils, traces).
+- `src/runtime.ts` : accès aux arguments de ligne de commande.
+
+## Palier 1 : outils
+
+- `search_product` : recherche d'un produit dans le catalogue par termes (nom, couleur, motif).
+- `check_stock` : vérifie le stock d'un produit pour une quantité donnée. En cas de rupture, propose des alternatives disponibles. Refuse les identifiants inconnus.
+- `calculate_delivery` : calcule les frais et le délai de livraison pour une zone. Gère les alias (par exemple Calavi vers le centre) et demande une précision pour les lieux ambigus (par exemple Cotonou seul).
+- `convert_currency` : convertit un montant en FCFA vers une devise cible. Utilise un taux en direct si disponible, sinon un taux de repli.
+- `create_order` : crée une commande en statut PENDING_CONFIRMATION (total = articles + livraison). Refuse une commande si un article est en rupture.
+
+## Palier 1 : spécifications
+
+- Le client demande un produit et une quantité, indique son lieu de livraison et une devise.
+- L'agent vérifie le stock, propose une alternative en cas de rupture, calcule la livraison et convertit le total.
+- L'agent ne finalise pas la commande sans accord explicite du client.
+
+Palier 2 et Palier 3 : (à compléter)
+
+## Démo et trace
+
+Scénario de démo : recherche de "super wax vert" (SW-003 en rupture), proposition de l'alternative SW-002, livraison à Dantokpa, conversion en euros.
+
+Lancer la démo :
+
+```
+pnpm run demo:palier1
+```
+
+La trace complète de l'exécution (5 appels d'outils, résultats et réponse finale) est documentée dans [docs/traces/trace-palier1.md](docs/traces/trace-palier1.md). Les tests du Palier 1 sont dans [tests/palier1.test.ts](tests/palier1.test.ts) (15 vérifications).
 
 ## Outils
 
 - TypeScript
 - Cloudflare Workers et Wrangler
 - Green API (WhatsApp)
+- tsx (exécution locale de la démo)
 
 ## Installation
 
@@ -50,6 +85,7 @@ pnpm install
 cp .dev.vars.example .dev.vars   # renseigner les clés Green API (ne jamais committer ce fichier)
 pnpm dev                         # lancement local avec Wrangler
 pnpm typecheck
+pnpm run demo:palier1            # démo du Palier 1
 pnpm deploy                      # déploiement sur Cloudflare
 ```
 

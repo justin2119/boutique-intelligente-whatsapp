@@ -8,6 +8,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
+    "demo:palier1": "tsx src/demo-palier1.ts demo",
     "test": "echo \"Aucun test pour le moment\" && exit 0"
   },
   "engines": {
@@ -16,6 +17,7 @@
   "packageManager": "pnpm@9.0.0",
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250101.0",
+    "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "wrangler": "^3.90.0"
   }
