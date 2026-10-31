@@ -10,11 +10,12 @@ import { formatFcfa } from "../agents/normalize";
 import { SellerAgent } from "../agents/seller-agent";
 import { loadCatalog } from "../data/catalog";
 import {
-  claimMessage,
   createCloudflareStorage,
   createMemoryStorage,
   HISTORY_MAX_ENTRIES,
   HISTORY_TTL_SECONDS,
+  isMessageProcessed,
+  markMessageProcessed,
   type AppStorage,
   type D1DatabaseLike,
   type KvLike,
@@ -23,8 +24,11 @@ import {
 import {
   GreenApiClient,
   isValidWebhookSecret,
+  parseIncomingNonText,
   parseIncomingWebhook,
+  type IncomingNonTextMessage,
   type IncomingTextMessage,
+  type NonTextMediaType,
 } from "../lib/green-api";
 import type { Catalog } from "../types";
 import type { OrderDraft, OrderStatus, ValidationRecord } from "../types/palier2";
@@ -38,6 +42,8 @@ export interface WorkerEnv {
   readonly GREEN_API_BASE_URL?: string;
   readonly WEBHOOK_SECRET?: string;
   readonly MANAGER_PHONE?: string;
+  readonly ENVIRONMENT?: string;
+  readonly NODE_ENV?: string;
 }
 
 export interface OutboundSender {
@@ -62,9 +68,27 @@ export type WebhookOutcome =
   | { readonly status: "ignored"; readonly reason: string }
   | { readonly status: "duplicate"; readonly messageId: string }
   | { readonly status: "manager_decision"; readonly reference: string; readonly decision: "CONFIRMED" | "REJECTED" }
-  | { readonly status: "replied"; readonly messageId: string; readonly orderReference: string | null };
+  | { readonly status: "replied"; readonly messageId: string; readonly orderReference: string | null }
+  | { readonly status: "non_text_reply"; readonly messageId: string; readonly mediaType: NonTextMediaType };
+
+/** Erreur levée quand les liaisons de stockage (KV/D1) manquent dans un environnement déployé. */
+export class StorageConfigError extends Error {
+  constructor() {
+    super("Storage bindings missing");
+    this.name = "StorageConfigError";
+  }
+}
 
 const MANAGER_COMMAND = /^(VALIDER|REFUSER)\s+(CMD-[A-Z0-9]+)$/i;
+
+const NON_TEXT_REPLIES: Record<NonTextMediaType, string> = {
+  audio:
+    "Bonjour ! J'ai bien reçu votre message vocal, mais pour l'instant je ne peux lire que les messages texte. Écrivez-moi votre commande ou question ici s'il vous plaît ! 🙏",
+  image:
+    "Bonjour ! J'ai bien reçu votre image, mais pour l'instant je ne peux lire que les messages texte. Écrivez-moi votre commande ou question ici s'il vous plaît ! 🙏",
+  document:
+    "Bonjour ! J'ai bien reçu votre document, mais pour l'instant je ne peux lire que les messages texte. Écrivez-moi votre commande ou question ici s'il vous plaît ! 🙏",
+};
 
 interface HistoryEntry {
   readonly role: "customer" | "assistant";
@@ -204,7 +228,12 @@ async function handleManagerMessage(
 
   const status: "CONFIRMED" | "REJECTED" = action === "VALIDER" ? "CONFIRMED" : "REJECTED";
   const validatedAt = clock().toISOString();
-  await storage.orders.updateStatus(reference, status, validatedAt);
+  // Transition atomique : seule la première décision aboutit (évite les notifications client en double).
+  const transitioned = await storage.orders.updateStatus(reference, status, validatedAt);
+  if (!transitioned) {
+    await sender.sendText(chatIdFor(managerPhone), `La commande ${reference} a déjà été traitée. Aucune notification envoyée.`);
+    return { status: "ignored", reason: "Commande déjà traitée (transition refusée)." };
+  }
   const validation: ValidationRecord = {
     id: order.validationId,
     status,
@@ -226,34 +255,74 @@ async function handleManagerMessage(
   return { status: "manager_decision", reference, decision: status };
 }
 
-/** Traite une notification Green API : filtre, idempotence, routage gérant ou client. */
+function isForeignInstance(idInstance: string | null, expected: string | undefined): boolean {
+  return expected !== undefined && idInstance !== null && idInstance !== expected;
+}
+
+/**
+ * Traite une notification Green API : filtre, idempotence, routage gérant ou client.
+ * L'identifiant n'est marqué comme traité qu'après réussite complète : une erreur transitoire
+ * (agent, envoi Green API) laisse le message reprenable lors du renvoi par Green API.
+ */
 export async function processWebhook(payload: unknown, deps: WorkerDeps): Promise<WebhookOutcome> {
   const message = parseIncomingWebhook(payload);
   if (message === null) {
-    return { status: "ignored", reason: "Notification non traitée (message texte entrant attendu)." };
+    const media = parseIncomingNonText(payload);
+    if (media === null) {
+      return { status: "ignored", reason: "Notification non traitée (message entrant attendu)." };
+    }
+    return handleNonTextMessage(media, deps);
   }
-  const expected = deps.config.expectedIdInstance;
-  if (expected !== undefined && message.idInstance !== null && message.idInstance !== expected) {
+  if (isForeignInstance(message.idInstance, deps.config.expectedIdInstance)) {
     return { status: "ignored", reason: "Instance Green API inconnue." };
   }
-  const fresh = await claimMessage(deps.storage.kv, message.messageId);
-  if (!fresh) {
+  if (await isMessageProcessed(deps.storage.kv, message.messageId)) {
     return { status: "duplicate", messageId: message.messageId };
   }
   const managerPhone = deps.config.managerPhone;
-  if (managerPhone !== undefined && message.senderPhone === managerPhone) {
-    return handleManagerMessage(message, deps, managerPhone);
-  }
-  return handleCustomerMessage(message, deps);
+  const outcome =
+    managerPhone !== undefined && message.senderPhone === managerPhone
+      ? await handleManagerMessage(message, deps, managerPhone)
+      : await handleCustomerMessage(message, deps);
+  await markMessageProcessed(deps.storage.kv, message.messageId);
+  return outcome;
 }
 
+/** Message audio, image ou document : réponse polie demandant un message texte. */
+async function handleNonTextMessage(media: IncomingNonTextMessage, deps: WorkerDeps): Promise<WebhookOutcome> {
+  if (isForeignInstance(media.idInstance, deps.config.expectedIdInstance)) {
+    return { status: "ignored", reason: "Instance Green API inconnue." };
+  }
+  if (await isMessageProcessed(deps.storage.kv, media.messageId)) {
+    return { status: "duplicate", messageId: media.messageId };
+  }
+  await deps.sender.sendText(media.chatId, NON_TEXT_REPLIES[media.mediaType]);
+  await markMessageProcessed(deps.storage.kv, media.messageId);
+  return { status: "non_text_reply", messageId: media.messageId, mediaType: media.mediaType };
+}
+
+function isExplicitDevMode(env: WorkerEnv): boolean {
+  return (
+    env.ENVIRONMENT === "development" ||
+    env.ENVIRONMENT === "test" ||
+    env.NODE_ENV === "development" ||
+    env.NODE_ENV === "test"
+  );
+}
+
+/**
+ * Construit les dépendances. Fail-closed : sans liaisons KV/D1, la mémoire n'est utilisée
+ * que dans les modes explicitement development/test ; sinon StorageConfigError est levée.
+ */
 export function buildDeps(env: WorkerEnv, sender: OutboundSender, clock: () => Date = () => new Date()): WorkerDeps {
   let storage: AppStorage;
   if (env.CONVERSATIONS_KV !== undefined && env.DB !== undefined) {
     storage = createCloudflareStorage(env.CONVERSATIONS_KV, env.DB);
-  } else {
-    console.warn("Liaisons KV/D1 absentes : stockage en mémoire (développement uniquement).");
+  } else if (isExplicitDevMode(env)) {
+    console.warn("Liaisons KV/D1 absentes : stockage en mémoire (développement/test uniquement).");
     storage = createMemoryStorage();
+  } else {
+    throw new StorageConfigError();
   }
   return {
     storage,
@@ -304,6 +373,10 @@ export async function routeRequest(
     if (request.method !== "POST") {
       return jsonResponse({ error: "method_not_allowed" }, 405);
     }
+    // Fail-closed : sans secret configuré, le webhook ne traite aucune requête.
+    if (env.WEBHOOK_SECRET === undefined || env.WEBHOOK_SECRET === "") {
+      return jsonResponse({ error: "configuration_error", message: "WEBHOOK_SECRET manquant" }, 500);
+    }
     if (!isValidWebhookSecret(readWebhookSecret(request), env.WEBHOOK_SECRET)) {
       return jsonResponse({ error: "unauthorized" }, 401);
     }
@@ -327,6 +400,10 @@ export async function routeRequest(
       const outcome = await processWebhook(payload, buildDeps(env, sender, clock));
       return jsonResponse({ ok: true, ...outcome }, 200);
     } catch (error) {
+      if (error instanceof StorageConfigError) {
+        console.error("webhook_failed", error.message);
+        return jsonResponse({ ok: false, error: "Storage bindings missing" }, 500);
+      }
       console.error("webhook_failed", error instanceof Error ? error.message : "erreur inconnue");
       return jsonResponse({ ok: false, error: "internal_error" }, 500);
     }
