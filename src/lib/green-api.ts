@@ -8,7 +8,7 @@ export interface FetchResponseLike {
 
 export type FetchLike = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body?: string },
+  init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal },
 ) => Promise<FetchResponseLike>;
 
 export interface GreenApiOptions {
@@ -17,6 +17,7 @@ export interface GreenApiOptions {
   readonly baseUrl?: string;
   readonly maxRetries?: number;
   readonly retryBaseDelayMs?: number;
+  readonly requestTimeoutMs?: number;
   readonly fetchImpl?: FetchLike;
   readonly sleep?: (ms: number) => Promise<void>;
 }
@@ -52,9 +53,22 @@ export interface IncomingTextMessage {
   readonly chatName: string | null;
 }
 
+export type NonTextMediaType = "audio" | "image" | "document";
+
+/** Message entrant non textuel (note vocale, image, document) : on ne le lit pas, mais on répond au client. */
+export interface IncomingNonTextMessage {
+  readonly messageId: string;
+  readonly chatId: string;
+  readonly senderPhone: string;
+  readonly idInstance: string | null;
+  readonly mediaType: NonTextMediaType;
+}
+
 const DEFAULT_BASE_URL = "https://api.green-api.com";
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_BASE_DELAY_MS = 500;
+/** Délai maximal par appel HTTP vers Green API : évite de bloquer l'exécution du Worker. */
+export const GREEN_API_TIMEOUT_MS = 8000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -75,6 +89,25 @@ function extractText(messageData: Record<string, unknown>): string | null {
     return isRecord(data) && typeof data.text === "string" ? data.text : null;
   }
   return null;
+}
+
+function mediaTypeOf(typeMessage: unknown): NonTextMediaType | null {
+  switch (typeMessage) {
+    case "audioMessage":
+      return "audio";
+    case "imageMessage":
+      return "image";
+    case "documentMessage":
+      return "document";
+    default:
+      return null;
+  }
+}
+
+function readInstance(payload: Record<string, unknown>): string | null {
+  const instanceData = payload.instanceData;
+  const instance = isRecord(instanceData) ? instanceData.idInstance : undefined;
+  return typeof instance === "number" || typeof instance === "string" ? String(instance) : null;
 }
 
 /**
@@ -108,25 +141,66 @@ export function parseIncomingWebhook(payload: unknown): IncomingTextMessage | nu
   if (senderPhone === "") {
     return null;
   }
-  const instanceData = payload.instanceData;
-  const instance = isRecord(instanceData) ? instanceData.idInstance : undefined;
   return {
     messageId,
     chatId: senderData.chatId,
     senderPhone,
     text: text.trim(),
     timestamp: typeof payload.timestamp === "number" ? payload.timestamp : 0,
-    idInstance: typeof instance === "number" || typeof instance === "string" ? String(instance) : null,
+    idInstance: readInstance(payload),
     chatName: typeof senderData.chatName === "string" ? senderData.chatName : null,
   };
 }
 
-/** Vérifie le secret partagé du webhook. Sans secret configuré, toute requête est acceptée. */
+/**
+ * Lit une notification `incomingMessageReceived` de type audio, image ou document (non textuel).
+ * Retourne null pour les messages textuels, les groupes ou les payloads invalides.
+ */
+export function parseIncomingNonText(payload: unknown): IncomingNonTextMessage | null {
+  if (!isRecord(payload) || payload.typeWebhook !== "incomingMessageReceived") {
+    return null;
+  }
+  const messageId = payload.idMessage;
+  if (typeof messageId !== "string" || messageId.trim() === "") {
+    return null;
+  }
+  const senderData = payload.senderData;
+  if (!isRecord(senderData) || typeof senderData.chatId !== "string") {
+    return null;
+  }
+  if (senderData.chatId.endsWith("@g.us")) {
+    return null;
+  }
+  const messageData = payload.messageData;
+  if (!isRecord(messageData)) {
+    return null;
+  }
+  const mediaType = mediaTypeOf(messageData.typeMessage);
+  if (mediaType === null) {
+    return null;
+  }
+  const senderPhone = phoneFromChatId(senderData.chatId);
+  if (senderPhone === "") {
+    return null;
+  }
+  return {
+    messageId,
+    chatId: senderData.chatId,
+    senderPhone,
+    idInstance: readInstance(payload),
+    mediaType,
+  };
+}
+
+/**
+ * Vérifie le secret partagé du webhook. Fail-closed : sans secret configuré (undefined ou vide),
+ * aucune requête n'est acceptée ; une valeur fournie vide ne correspond jamais.
+ */
 export function isValidWebhookSecret(provided: string | null, expected: string | undefined): boolean {
   if (expected === undefined || expected === "") {
-    return true;
+    return false;
   }
-  if (provided === null || provided.length !== expected.length) {
+  if (provided === null || provided === "" || provided.length !== expected.length) {
     return false;
   }
   let mismatch = 0;
@@ -136,7 +210,10 @@ export function isValidWebhookSecret(provided: string | null, expected: string |
   return mismatch === 0;
 }
 
-function defaultFetch(url: string, init: { method: string; headers: Record<string, string>; body?: string }): Promise<FetchResponseLike> {
+function defaultFetch(
+  url: string,
+  init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal },
+): Promise<FetchResponseLike> {
   return fetch(url, init);
 }
 
@@ -159,6 +236,7 @@ export class GreenApiClient {
   private readonly baseUrl: string;
   private readonly maxRetries: number;
   private readonly retryBaseDelayMs: number;
+  private readonly requestTimeoutMs: number;
   private readonly fetchImpl: FetchLike;
   private readonly sleep: (ms: number) => Promise<void>;
 
@@ -168,6 +246,7 @@ export class GreenApiClient {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? GREEN_API_TIMEOUT_MS;
     this.fetchImpl = options.fetchImpl ?? defaultFetch;
     this.sleep = options.sleep ?? defaultSleep;
   }
@@ -212,9 +291,10 @@ export class GreenApiClient {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
+          signal: AbortSignal.timeout(this.requestTimeoutMs),
         });
       } catch {
-        lastError = new GreenApiError(`Erreur réseau Green API (${method})`, null, true);
+        lastError = new GreenApiError(`Erreur réseau ou délai dépassé Green API (${method})`, null, true);
         continue;
       }
       const raw = await response.text();
