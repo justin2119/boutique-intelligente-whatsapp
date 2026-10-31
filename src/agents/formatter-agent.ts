@@ -1,6 +1,11 @@
 import type { AggregatedResponse, LogisticsResult, SellerResult, ValidationRecord } from "../types/palier2";
 import { formatFcfa } from "./normalize";
 
+/** Libellé du délai : « livraison le jour même » pour 0 jour, sinon « délai estimé N jour(s) ». */
+export function etaPhrase(etaDays: number): string {
+  return etaDays === 0 ? "livraison le jour même" : `délai estimé ${etaDays} jour(s)`;
+}
+
 /** Agent Éditeur / Formateur WhatsApp : ton de commerçant béninois, mise en forme WhatsApp (*gras*, emojis). */
 export class FormatterAgent {
   compose(aggregated: AggregatedResponse): string {
@@ -48,7 +53,7 @@ function logisticsSection(result: LogisticsResult): string {
   switch (result.kind) {
     case "quoted": {
       const label = result.option === "express" ? "express" : "standard";
-      return `🚚 Livraison ${label} à ${result.zone.zone} : ${formatFcfa(result.feeXof)}, délai estimé ${result.etaDays} jour(s).`;
+      return `🚚 Livraison ${label} à ${result.zone.zone} : ${formatFcfa(result.feeXof)}, ${etaPhrase(result.etaDays)}.`;
     }
     case "ambiguous":
       return `📍 Pour calculer les frais, précisez le quartier parmi : ${result.candidates.join(", ")}.`;
@@ -72,7 +77,7 @@ function orderSection(validation: ValidationRecord): string {
     `Articles : ${formatFcfa(draft.subtotalXof)}`,
     `Livraison : ${formatFcfa(draft.deliveryFeeXof)}`,
     `*Total : ${formatFcfa(draft.totalXof)}*`,
-    `📦 Livraison à ${draft.zoneLabel}, délai estimé ${draft.etaDays} jour(s).`,
+    `📦 Livraison à ${draft.zoneLabel}, ${etaPhrase(draft.etaDays)}.`,
     status,
   ].join("\n");
 }
