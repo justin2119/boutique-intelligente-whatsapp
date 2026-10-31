@@ -1,0 +1,29 @@
+# Dépendances
+node_modules/
+.pnpm-store/
+
+# Build et sorties TypeScript
+dist/
+build/
+*.tsbuildinfo
+
+# Cloudflare Wrangler
+.wrangler/
+.dev.vars
+
+# Variables d'environnement et secrets
+.env
+.env.*
+!.env.example
+!.dev.vars.example
+
+# Logs
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# Système et éditeurs
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
