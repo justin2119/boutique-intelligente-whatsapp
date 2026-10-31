@@ -1,0 +1,17 @@
+[
+  { "id": "cotonou-akpakpa", "zone": "Akpakpa", "city": "Cotonou", "aliases": [], "feeXof": 1000, "etaDays": 1 },
+  { "id": "cotonou-cadjehoun", "zone": "Cadjehoun", "city": "Cotonou", "aliases": ["cadjehoun"], "feeXof": 1000, "etaDays": 1 },
+  { "id": "cotonou-haie-vive", "zone": "Haie Vive", "city": "Cotonou", "aliases": ["haievive"], "feeXof": 1500, "etaDays": 1 },
+  { "id": "cotonou-saint-michel", "zone": "Saint-Michel", "city": "Cotonou", "aliases": ["st michel"], "feeXof": 1000, "etaDays": 1 },
+  { "id": "cotonou-gbegamey", "zone": "Gbégamey", "city": "Cotonou", "aliases": [], "feeXof": 1000, "etaDays": 1 },
+  { "id": "cotonou-dantokpa", "zone": "Dantokpa", "city": "Cotonou", "aliases": ["marche dantokpa"], "feeXof": 500, "etaDays": 0 },
+  { "id": "cotonou-fidjrosse", "zone": "Fidjrossè", "city": "Cotonou", "aliases": ["fidjross"], "feeXof": 1500, "etaDays": 1 },
+  { "id": "cotonou-cocotomey", "zone": "Cocotomey", "city": "Cotonou", "aliases": [], "feeXof": 1500, "etaDays": 1 },
+  { "id": "calavi-centre", "zone": "Centre-ville", "city": "Abomey-Calavi", "aliases": ["calavi", "abomey calavi"], "feeXof": 2500, "etaDays": 1 },
+  { "id": "calavi-arconville", "zone": "Arconville", "city": "Abomey-Calavi", "aliases": [], "feeXof": 2000, "etaDays": 1 },
+  { "id": "calavi-zogbadje", "zone": "Zogbadjè", "city": "Abomey-Calavi", "aliases": [], "feeXof": 2000, "etaDays": 2 },
+  { "id": "porto-novo", "zone": "Porto-Novo", "city": "Porto-Novo", "aliases": ["porto novo"], "feeXof": 3500, "etaDays": 2 },
+  { "id": "seme-kpodji", "zone": "Sèmè-Kpodji", "city": "Sèmè-Kpodji", "aliases": [], "feeXof": 3000, "etaDays": 2 },
+  { "id": "ouidah", "zone": "Ouidah", "city": "Ouidah", "aliases": [], "feeXof": 4000, "etaDays": 2 },
+  { "id": "lome-togo", "zone": "Lomé (Togo)", "city": "Lomé", "aliases": ["lome", "togo"], "feeXof": 12000, "etaDays": 4 }
+]
