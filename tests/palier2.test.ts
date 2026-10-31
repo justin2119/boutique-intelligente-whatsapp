@@ -97,19 +97,19 @@ async function main(): Promise<void> {
     assert.equal(result.feeXof, 500);
     assert.equal(result.etaDays, 0);
   });
-  await check("logistique : Dantokpa express = 750 FCFA, 1 jour (minimum)", () => {
+  await check("logistique : Dantokpa express = 750 FCFA, 0 jour (jour même)", () => {
     const result = new LogisticsAgent(catalog.zones).quote("Dantokpa", "express");
     assert.equal(result.kind, "quoted");
     if (result.kind !== "quoted") return;
     assert.equal(result.feeXof, Math.round(500 * EXPRESS_FEE_MULTIPLIER));
     assert.equal(result.feeXof, 750);
-    assert.equal(result.etaDays, 1);
+    assert.equal(result.etaDays, 0);
   });
-  await check("logistique : Akpakpa express = 1 500 FCFA, 1 jour", () => {
+  await check("logistique : Akpakpa express = 1 500 FCFA, 0 jour (standard 1 jour, express jour même)", () => {
     const result = new LogisticsAgent(catalog.zones).quote("Akpakpa", "express");
     if (result.kind !== "quoted") throw new Error("attendu : tarif");
     assert.equal(result.feeXof, 1500);
-    assert.equal(result.etaDays, 1);
+    assert.equal(result.etaDays, 0);
   });
   await check("logistique : Cotonou seul est ambigu", () => {
     const result = new LogisticsAgent(catalog.zones).quote("Cotonou", "standard");
