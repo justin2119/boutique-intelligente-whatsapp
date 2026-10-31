@@ -12,7 +12,7 @@ import { SellerAgent } from "../src/agents/seller-agent";
 // Déclaration locale : tsconfig.json n'inclut que @cloudflare/workers-types (pas de @types/node).
 declare const process: { exitCode: number | undefined };
 
-/** Assertions locales (remplacent node:assert, non typé dans ce projet). */
+/** Assertions locales (remplacent node:assert, non typé dans ce projet). Aucune signature `asserts`. */
 const assert = {
   equal(actual: unknown, expected: unknown, message?: string): void {
     if (!Object.is(actual, expected)) {
@@ -24,11 +24,6 @@ const assert = {
     const e = JSON.stringify(expected);
     if (a !== e) {
       throw new Error(message ?? `attendu ${e}, obtenu ${a}`);
-    }
-  },
-  ok(value: unknown, message?: string): asserts value {
-    if (!value) {
-      throw new Error(message ?? "valeur attendue vraie");
     }
   },
   match(value: string, pattern: RegExp, message?: string): void {
@@ -174,7 +169,9 @@ async function main(): Promise<void> {
     const manager = buildManager();
     const trace = await manager.handle("Je prends la commande : 2 pagnes SW-002, livraison à Dantokpa en express.");
     const pending = trace.aggregated.validation;
-    assert.ok(pending !== null, "validation attendue");
+    if (pending === null) {
+      throw new Error("validation attendue");
+    }
     assert.equal(pending.status, "PENDING_HUMAN_VALIDATION");
     assert.equal(pending.draft.totalXof, 18750);
     assert.equal(pending.draft.subtotalXof, 18000);
