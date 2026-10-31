@@ -2,13 +2,53 @@
  * Tests du Palier 2 : routage du Manager, alternatives du Vendeur, frais du Logisticien,
  * transitions de validation humaine (HITL). Exécution : pnpm run test:palier2
  */
-import { strict as assert } from "node:assert";
 import { loadCatalog } from "../src/data/catalog";
 import { FormatterAgent } from "../src/agents/formatter-agent";
 import { HitlValidator } from "../src/agents/hitl";
 import { LogisticsAgent, EXPRESS_FEE_MULTIPLIER } from "../src/agents/logistics-agent";
 import { ManagerAgent, classifyIntent, parseQuantity } from "../src/agents/manager-agent";
 import { SellerAgent } from "../src/agents/seller-agent";
+
+// Déclaration locale : tsconfig.json n'inclut que @cloudflare/workers-types (pas de @types/node).
+declare const process: { exitCode: number | undefined };
+
+/** Assertions locales (remplacent node:assert, non typé dans ce projet). */
+const assert = {
+  equal(actual: unknown, expected: unknown, message?: string): void {
+    if (!Object.is(actual, expected)) {
+      throw new Error(message ?? `attendu ${String(expected)}, obtenu ${String(actual)}`);
+    }
+  },
+  deepEqual(actual: unknown, expected: unknown, message?: string): void {
+    const a = JSON.stringify(actual);
+    const e = JSON.stringify(expected);
+    if (a !== e) {
+      throw new Error(message ?? `attendu ${e}, obtenu ${a}`);
+    }
+  },
+  ok(value: unknown, message?: string): asserts value {
+    if (!value) {
+      throw new Error(message ?? "valeur attendue vraie");
+    }
+  },
+  match(value: string, pattern: RegExp, message?: string): void {
+    if (!pattern.test(value)) {
+      throw new Error(message ?? `"${value}" ne correspond pas à ${String(pattern)}`);
+    }
+  },
+  throws(fn: () => unknown, pattern: RegExp, message?: string): void {
+    try {
+      fn();
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      if (!pattern.test(text)) {
+        throw new Error(message ?? `erreur inattendue : ${text}`);
+      }
+      return;
+    }
+    throw new Error(message ?? "exception attendue");
+  },
+};
 
 const FIXED_INSTANT = "2026-10-31T18:35:43.000Z";
 const clock = (): Date => new Date(FIXED_INSTANT);
