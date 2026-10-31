@@ -8,7 +8,13 @@ import { normalizeText } from "./normalize";
  */
 export const EXPRESS_FEE_MULTIPLIER = 1.5;
 export const EXPRESS_ETA_REDUCTION_DAYS = 1;
-export const MIN_EXPRESS_ETA_DAYS = 1;
+/** Plancher du délai express : 0 jour, pour que la livraison du jour même (ex. Dantokpa) reste le jour même. */
+export const MIN_EXPRESS_ETA_DAYS = 0;
+
+/** Calcule le délai express : jamais plus lent que le standard, et 0 jour reste 0 jour. */
+export function expressEtaDays(standardEtaDays: number): number {
+  return Math.min(standardEtaDays, Math.max(MIN_EXPRESS_ETA_DAYS, standardEtaDays - EXPRESS_ETA_REDUCTION_DAYS));
+}
 
 /** Agent Logisticien : frais, délai et options de livraison (Cotonou, Calavi, Porto-Novo, Lomé). */
 export class LogisticsAgent {
@@ -45,7 +51,7 @@ export class LogisticsAgent {
       zone,
       option,
       feeXof: express ? Math.round(zone.feeXof * EXPRESS_FEE_MULTIPLIER) : zone.feeXof,
-      etaDays: express ? Math.max(MIN_EXPRESS_ETA_DAYS, zone.etaDays - EXPRESS_ETA_REDUCTION_DAYS) : zone.etaDays,
+      etaDays: express ? expressEtaDays(zone.etaDays) : zone.etaDays,
     };
   }
 }
