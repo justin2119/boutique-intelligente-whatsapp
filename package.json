@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "demo:palier1": "tsx src/demo-palier1.ts demo",
     "demo:palier2": "tsx src/demo-palier2.ts demo",
+    "test:palier2": "tsx tests/palier2.test.ts",
     "test": "echo \"Aucun test pour le moment\" && exit 0"
   },
   "engines": {
