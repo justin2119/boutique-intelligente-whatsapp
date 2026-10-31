@@ -344,7 +344,11 @@ function jsonResponse(body: unknown, status: number): Response {
   });
 }
 
-function readWebhookSecret(request: Request): string | null {
+/**
+ * Secret du webhook, lu dans l'ordre : en-tête x-webhook-secret, en-tête Authorization Bearer,
+ * puis paramètre de requête ?secret= (pour Green API, qui n'accepte qu'une URL cible).
+ */
+export function readWebhookSecret(request: Request, url: URL): string | null {
   const header = request.headers.get("x-webhook-secret");
   if (header !== null) {
     return header;
@@ -353,10 +357,13 @@ function readWebhookSecret(request: Request): string | null {
   if (authorization !== null && authorization.startsWith("Bearer ")) {
     return authorization.slice("Bearer ".length);
   }
-  return null;
+  return url.searchParams.get("secret");
 }
 
-/** Routeur HTTP : GET / (healthcheck) et POST /webhook/whatsapp. */
+/** Chemins acceptés pour le webhook entrant Green API. */
+const WEBHOOK_PATHS: ReadonlySet<string> = new Set(["/webhook", "/webhook/whatsapp"]);
+
+/** Routeur HTTP : GET / (healthcheck) et POST /webhook ou /webhook/whatsapp. */
 export async function routeRequest(
   request: Request,
   env: WorkerEnv,
@@ -369,7 +376,7 @@ export async function routeRequest(
     }
     return jsonResponse({ status: "ok", service: "boutique-intelligente-whatsapp", palier: 3 }, 200);
   }
-  if (url.pathname === "/webhook/whatsapp") {
+  if (WEBHOOK_PATHS.has(url.pathname)) {
     if (request.method !== "POST") {
       return jsonResponse({ error: "method_not_allowed" }, 405);
     }
@@ -377,7 +384,7 @@ export async function routeRequest(
     if (env.WEBHOOK_SECRET === undefined || env.WEBHOOK_SECRET === "") {
       return jsonResponse({ error: "configuration_error", message: "WEBHOOK_SECRET manquant" }, 500);
     }
-    if (!isValidWebhookSecret(readWebhookSecret(request), env.WEBHOOK_SECRET)) {
+    if (!isValidWebhookSecret(readWebhookSecret(request, url), env.WEBHOOK_SECRET)) {
       return jsonResponse({ error: "unauthorized" }, 401);
     }
     let payload: unknown;
