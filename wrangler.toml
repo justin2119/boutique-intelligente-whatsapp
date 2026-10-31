@@ -10,11 +10,11 @@ GREEN_API_BASE_URL = "https://api.green-api.com"
 # Remplacer l'identifiant par celui créé avec `wrangler kv namespace create CONVERSATIONS_KV`.
 [[kv_namespaces]]
 binding = "CONVERSATIONS_KV"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "bd496fee3e894728bf51a256f4a3afe1"
 
 # Remplacer database_id par celui renvoyé par `wrangler d1 create boutique-orders`.
 [[d1_databases]]
 binding = "DB"
 database_name = "boutique-orders"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "739e327a-34bd-475c-8f21-e05d2b7d80be"
 migrations_dir = "migrations"
