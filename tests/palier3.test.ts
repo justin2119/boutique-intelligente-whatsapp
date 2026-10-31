@@ -1,5 +1,5 @@
 /** Tests Palier 3 : parsing des webhooks, client Green API, déduplication, dispatch Manager, HITL et fiabilité. */
-import { buildDeps, processWebhook, routeRequest, type OutboundSender, type WorkerDeps, type WorkerEnv } from "../src/worker/index";
+import { buildDeps, processWebhook, routeRequest, type OutboundSender, type WorkerDeps } from "../src/worker/index";
 import {
   claimMessage,
   createCloudflareStorage,
@@ -89,9 +89,15 @@ function makeDeps(sender: OutboundSender, storage: AppStorage): WorkerDeps {
   };
 }
 
-/** D1 simulé : une seule ligne `orders` ; UPDATE conditionnel comme en production. */
-function fakeD1(): { db: D1DatabaseLike; rows: Map<string, { status: string; validated_at: string | null }> } {
-  const rows = new Map<string, { status: string; validated_at: string | null }>();
+/** Ligne simulée de la table `orders` (colonnes SQL, comme renvoyées par D1). */
+type FakeOrderRow = Record<string, unknown> & { reference: string; status: string; validated_at: string | null };
+
+/**
+ * D1 simulé pour la table `orders` : INSERT stocke la ligne complète (colonnes de createD1OrderStore),
+ * SELECT ... WHERE reference = ? la renvoie, et UPDATE conditionnel renvoie meta.changes comme en production.
+ */
+function fakeD1(): { db: D1DatabaseLike; rows: Map<string, FakeOrderRow> } {
+  const rows = new Map<string, FakeOrderRow>();
   const db: D1DatabaseLike = {
     prepare(query: string): D1PreparedLike {
       let params: unknown[] = [];
@@ -101,22 +107,51 @@ function fakeD1(): { db: D1DatabaseLike; rows: Map<string, { status: string; val
           return prepared;
         },
         async run() {
+          if (query.startsWith("INSERT INTO orders")) {
+            // Ordre des colonnes identique à createD1OrderStore.insert.
+            const columns = [
+              "reference",
+              "customer_phone",
+              "items",
+              "subtotal",
+              "delivery_fee",
+              "total",
+              "status",
+              "zone_id",
+              "delivery_option",
+              "eta_days",
+              "validation_id",
+              "draft_json",
+              "created_at",
+              "validated_at",
+            ];
+            const row: Record<string, unknown> = {};
+            columns.forEach((column, index) => {
+              row[column] = params[index];
+            });
+            const reference = String(row.reference);
+            if (rows.has(reference)) {
+              throw new Error(`Commande déjà enregistrée : ${reference}`);
+            }
+            rows.set(reference, row as FakeOrderRow);
+            return { meta: { changes: 1 } };
+          }
           if (query.startsWith("UPDATE orders")) {
             assert(query.includes("AND status = 'PENDING_HUMAN_VALIDATION'"), "garde atomique attendue dans la requête");
             const [status, validatedAt, reference] = params as [string, string, string];
             const row = rows.get(reference);
             if (row !== undefined && row.status === "PENDING_HUMAN_VALIDATION") {
-              rows.set(reference, { status, validated_at: validatedAt });
+              rows.set(reference, { ...row, status, validated_at: validatedAt });
               return { meta: { changes: 1 } };
             }
             return { meta: { changes: 0 } };
           }
-          return { meta: { changes: 1 } };
+          return { meta: { changes: 0 } };
         },
         async first<T>(): Promise<T | null> {
           const reference = params[0] as string;
           const row = rows.get(reference);
-          return row === undefined ? null : ({ reference, status: row.status, validated_at: row.validated_at } as T);
+          return row === undefined ? null : (row as unknown as T);
         },
       };
       return prepared;
@@ -471,7 +506,7 @@ test("HITL : une validation déjà traitée n'est pas rejouée (mémoire)", asyn
 test("D1 atomique : UPDATE conditionnel changes=1 puis changes=0 (pas de double notification)", async () => {
   const { db, rows } = fakeD1();
   const store = createD1OrderStore(db);
-  rows.set("CMD-ATOM", { status: "PENDING_HUMAN_VALIDATION", validated_at: null });
+  rows.set("CMD-ATOM", { reference: "CMD-ATOM", status: "PENDING_HUMAN_VALIDATION", validated_at: null });
   assertEqual(await store.updateStatus("CMD-ATOM", "CONFIRMED", CLOCK_INSTANT), true, "première transition");
   assertEqual(await store.updateStatus("CMD-ATOM", "REJECTED", CLOCK_INSTANT), false, "seconde transition refusée");
   assertEqual(rows.get("CMD-ATOM")?.status ?? null, "CONFIRMED", "statut final inchangé");
