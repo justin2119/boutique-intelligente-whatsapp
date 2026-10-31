@@ -45,7 +45,12 @@ export interface OrderRecord {
 export interface OrderStore {
   insert(order: OrderRecord): Promise<void>;
   findByReference(reference: string): Promise<OrderRecord | null>;
-  updateStatus(reference: string, status: OrderStatus, validatedAt: string): Promise<void>;
+  /**
+   * Transition atomique PENDING_HUMAN_VALIDATION -> status.
+   * Retourne true seulement si la commande était encore en attente (une seule ligne modifiée).
+   * Retourne false si la commande a déjà été traitée ou n'existe pas.
+   */
+  updateStatus(reference: string, status: OrderStatus, validatedAt: string): Promise<boolean>;
 }
 
 export interface AppStorage {
@@ -55,12 +60,24 @@ export interface AppStorage {
 
 /** Enregistre l'identifiant de message ; retourne false s'il a déjà été traité (doublon). */
 export async function claimMessage(kv: KvLike, messageId: string): Promise<boolean> {
-  const key = `dedup:${messageId}`;
-  if ((await kv.get(key)) !== null) {
+  if (await isMessageProcessed(kv, messageId)) {
     return false;
   }
-  await kv.put(key, "1", { expirationTtl: DEDUP_TTL_SECONDS });
+  await markMessageProcessed(kv, messageId);
   return true;
+}
+
+/** Indique si le messageId a déjà été traité avec succès (sans le réserver). */
+export async function isMessageProcessed(kv: KvLike, messageId: string): Promise<boolean> {
+  return (await kv.get(`dedup:${messageId}`)) !== null;
+}
+
+/**
+ * Marque le messageId comme traité. À n'appeler qu'après réussite complète du workflow
+ * (traitement agent + envoi Green API), afin qu'une panne transitoire permette la reprise par Green API.
+ */
+export async function markMessageProcessed(kv: KvLike, messageId: string): Promise<void> {
+  await kv.put(`dedup:${messageId}`, "1", { expirationTtl: DEDUP_TTL_SECONDS });
 }
 
 interface OrderRow {
@@ -97,6 +114,17 @@ function rowToRecord(row: OrderRow): OrderRecord {
   };
 }
 
+/** Extrait meta.changes du résultat d'une requête D1 (nombre de lignes modifiées). */
+function changesOf(result: unknown): number {
+  if (typeof result === "object" && result !== null && "meta" in result) {
+    const meta = (result as { meta?: { changes?: unknown } }).meta;
+    if (meta !== undefined && typeof meta.changes === "number") {
+      return meta.changes;
+    }
+  }
+  return 0;
+}
+
 /** Table `orders` de D1 (voir migrations/0001_init_orders.sql). */
 export function createD1OrderStore(db: D1DatabaseLike): OrderStore {
   return {
@@ -128,10 +156,11 @@ export function createD1OrderStore(db: D1DatabaseLike): OrderStore {
       return row === null ? null : rowToRecord(row);
     },
     async updateStatus(reference, status, validatedAt) {
-      await db
-        .prepare("UPDATE orders SET status = ?, validated_at = ? WHERE reference = ?")
+      const result = await db
+        .prepare("UPDATE orders SET status = ?, validated_at = ? WHERE reference = ? AND status = 'PENDING_HUMAN_VALIDATION'")
         .bind(status, validatedAt, reference)
         .run();
+      return changesOf(result) === 1;
     },
   };
 }
@@ -165,10 +194,11 @@ export function createMemoryStorage(): AppStorage {
     },
     async updateStatus(reference, status, validatedAt) {
       const current = orders.get(reference);
-      if (current === undefined) {
-        throw new Error(`Commande inconnue : ${reference}`);
+      if (current === undefined || current.status !== "PENDING_HUMAN_VALIDATION") {
+        return false;
       }
       orders.set(reference, { ...current, status, validatedAt });
+      return true;
     },
   };
   return { kv, orders: store };
