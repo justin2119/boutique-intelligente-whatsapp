@@ -1,0 +1,20 @@
+name = "boutique-intelligente-whatsapp"
+main = "src/worker/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Variables non secrètes. Les secrets se définissent avec `wrangler secret put` (voir README).
+[vars]
+GREEN_API_BASE_URL = "https://api.green-api.com"
+
+# Remplacer l'identifiant par celui créé avec `wrangler kv namespace create CONVERSATIONS_KV`.
+[[kv_namespaces]]
+binding = "CONVERSATIONS_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Remplacer database_id par celui renvoyé par `wrangler d1 create boutique-orders`.
+[[d1_databases]]
+binding = "DB"
+database_name = "boutique-orders"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"

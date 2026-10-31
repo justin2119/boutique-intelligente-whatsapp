@@ -1,6 +1,6 @@
 {
   "name": "boutique-intelligente-whatsapp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Agent IA vendeur WhatsApp pour boutique de pagnes au marché Dantokpa (TypeScript, Cloudflare Workers, Green API)",
   "type": "module",
@@ -11,7 +11,10 @@
     "demo:palier1": "tsx src/demo-palier1.ts demo",
     "demo:palier2": "tsx src/demo-palier2.ts demo",
     "test:palier2": "tsx tests/palier2.test.ts",
-    "test": "echo \"Aucun test pour le moment\" && exit 0"
+    "test:palier3": "tsx tests/palier3.test.ts",
+    "test": "echo \"Aucun test pour le moment\" && exit 0",
+    "db:migrate:local": "wrangler d1 migrations apply boutique-orders --local",
+    "db:migrate:remote": "wrangler d1 migrations apply boutique-orders --remote"
   },
   "engines": {
     "node": ">=20"

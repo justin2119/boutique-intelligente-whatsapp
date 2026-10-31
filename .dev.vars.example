@@ -1,0 +1,5 @@
+# Copier vers .dev.vars (ne jamais committer .dev.vars).
+GREEN_API_ID_INSTANCE=1101000001
+GREEN_API_TOKEN_INSTANCE=remplacer_par_le_token_green_api
+WEBHOOK_SECRET=remplacer_par_un_secret_long_et_aleatoire
+MANAGER_PHONE=22900000000

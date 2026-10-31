@@ -11,19 +11,22 @@ Le marché Dantokpa est l'un des plus grands marchés à ciel ouvert d'Afrique d
 - Messagerie : WhatsApp, via l'API Green API (webhooks entrants et envoi de messages sortants).
 - Backend : Cloudflare Worker écrit en TypeScript, qui reçoit les webhooks Green API et orchestre l'agent.
 - Agent : logique de conversation, outils (consultation du catalogue, prix, stock, panier), et mémoire de conversation par client.
-- Données : catalogue de pagnes en fichiers JSON versionnés dans `data/catalog/`.
+- Données : catalogue de pagnes en fichiers JSON versionnés dans `data/catalog/`, commandes dans D1, sessions et déduplication dans KV.
 - Tests : `tests/`.
 
-Structure initiale :
+Structure :
 
 ```
 src/
-  worker/   point d'entrée Cloudflare Worker (webhooks Green API)
-  agents/   logique de l'agent vendeur
+  worker/   point d'entrée Cloudflare Worker (webhooks Green API, routage HTTP)
+  agents/   logique de l'agent vendeur (Manager, Vendeur, Logisticien, Formateur, HITL)
+  data/     catalogue, stockage KV/D1 et mock mémoire
+  lib/      client Green API
   tools/    outils appelables par l'agent (catalogue, prix, stock)
   types/    types TypeScript partagés
 data/
   catalog/  catalogue des pagnes (JSON)
+migrations/ schéma D1 (commandes)
 tests/
 ```
 
@@ -107,12 +110,110 @@ pnpm run demo:palier1
 
 La trace complète de l'exécution (5 appels d'outils, résultats et réponse finale) est documentée dans [docs/traces/trace-palier1.md](docs/traces/trace-palier1.md). Les tests du Palier 1 sont dans [tests/palier1.test.ts](tests/palier1.test.ts) (15 vérifications).
 
+## Palier 3 : déploiement Cloudflare Workers, Green API et persistance
+
+### Architecture
+
+- `src/worker/index.ts` : point d'entrée Worker. Routes `GET /` (healthcheck) et `POST /webhook/whatsapp`.
+- `src/lib/green-api.ts` : parsing des notifications entrantes (`incomingMessageReceived`, messages texte) et client REST sortant (`sendMessage`, `sendButtons`) avec reprises sur 429 et 5xx.
+- `src/data/storage.ts` : KV (`CONVERSATIONS_KV`) pour la déduplication (`dedup:<messageId>`, TTL 24 h) et l'historique (`conversation:<téléphone>`, 20 derniers échanges) ; D1 (`DB`) pour la table `orders` ; mock mémoire pour les tests et le développement local.
+- `migrations/0001_init_orders.sql` : schéma D1 de la table `orders`.
+
+Flux d'un message entrant :
+
+1. Green API envoie une notification `incomingMessageReceived` à `POST /webhook/whatsapp`.
+2. Le Worker vérifie le secret (en-tête `x-webhook-secret` ou `Authorization: Bearer`) si `WEBHOOK_SECRET` est défini, puis lit la notification. Les notifications non textuelles, les groupes et les instances inconnues sont ignorées.
+3. Idempotence : si le `idMessage` a déjà été traité (clé KV), la requête est ignorée (`status: duplicate`).
+4. Si l'expéditeur est le gérant (`MANAGER_PHONE`) et que le message est `VALIDER CMD-...` ou `REFUSER CMD-...`, la commande est décidée, enregistrée en D1 et le client est notifié.
+5. Sinon, le message client est confié au Manager (Palier 2) : Vendeur, Logisticien, puis Formateur WhatsApp.
+6. Si une commande est assemblée, elle est enregistrée en D1 avec le statut `PENDING_HUMAN_VALIDATION` et le gérant reçoit un récapitulatif avec les commandes `VALIDER` ou `REFUSER`.
+7. La réponse formatée est envoyée au client via `sendMessage` de Green API.
+
+Le client ne peut pas valider sa propre commande : seule la décision du gérant passe la commande à `CONFIRMED` ou `REJECTED`.
+
+### Variables d'environnement et secrets
+
+Variables non secrètes (dans `wrangler.toml`, section `[vars]`) :
+
+- `GREEN_API_BASE_URL` : `https://api.green-api.com`.
+
+Secrets (à définir avec `wrangler secret put` en production, ou dans `.dev.vars` en local) :
+
+- `GREEN_API_ID_INSTANCE` : identifiant de l'instance Green API. Les notifications d'une autre instance sont ignorées.
+- `GREEN_API_TOKEN_INSTANCE` : jeton de l'instance Green API.
+- `WEBHOOK_SECRET` : secret partagé vérifié sur chaque webhook. Recommandé en production.
+- `MANAGER_PHONE` : numéro du gérant au format international sans le signe plus (par exemple 22900000000). Requis pour la validation humaine.
+
+Modèle de configuration locale : `.dev.vars.example` (copier vers `.dev.vars`, ne jamais committer `.dev.vars`).
+
+### Déploiement Cloudflare pas à pas
+
+1. Installer les dépendances : `pnpm install`.
+2. Créer le namespace KV : `pnpm exec wrangler kv namespace create CONVERSATIONS_KV`. Reporter l'identifiant renvoyé dans `wrangler.toml` (champ `id` de `[[kv_namespaces]]`).
+3. Créer la base D1 : `pnpm exec wrangler d1 create boutique-orders`. Reporter `database_id` dans `wrangler.toml`.
+4. Appliquer le schéma : `pnpm run db:migrate:remote` (ou `pnpm run db:migrate:local` pour le développement).
+5. Définir les secrets :
+
+```
+pnpm exec wrangler secret put GREEN_API_ID_INSTANCE
+pnpm exec wrangler secret put GREEN_API_TOKEN_INSTANCE
+pnpm exec wrangler secret put WEBHOOK_SECRET
+pnpm exec wrangler secret put MANAGER_PHONE
+```
+
+6. Déployer : `pnpm run deploy`. L'URL affichée (par exemple `https://boutique-intelligente-whatsapp.<compte>.workers.dev`) sert de base aux webhooks.
+7. Configurer Green API : dans le tableau de bord de l'instance, activer les notifications entrantes (`incomingMessageReceived`) et renseigner l'URL du webhook `https://<votre-worker>/webhook/whatsapp`. Si `WEBHOOK_SECRET` est défini, ajouter l'en-tête `x-webhook-secret` avec la même valeur (si le tableau de bord ne permet pas d'en-têtes personnalisés, utiliser une URL de la forme `https://<votre-worker>/webhook/whatsapp` protégée par un mécanisme équivalent).
+
+### Tests curl
+
+Healthcheck :
+
+```
+curl -s http://localhost:8787/
+```
+
+Simulation d'un message client en local (`pnpm dev`) :
+
+```
+curl -s -X POST http://localhost:8787/webhook/whatsapp \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: $WEBHOOK_SECRET" \
+  -d '{"typeWebhook":"incomingMessageReceived","instanceData":{"idInstance":1101000001,"wid":"1101000001@c.us","typeInstance":"whatsapp"},"timestamp":1761935212,"idMessage":"TEST-0001","senderData":{"chatId":"22997000001@c.us","sender":"22997000001@c.us","chatName":"Client test"},"messageData":{"typeMessage":"textMessage","textMessageData":{"textMessage":"Bonjour, je cherche du super wax vert, 2 pagnes"}}}'
+```
+
+Rejouer le même `idMessage` : la réponse doit indiquer `"status":"duplicate"`.
+
+Décision du gérant (remplacer la référence par celle reçue dans la notification) :
+
+```
+curl -s -X POST http://localhost:8787/webhook/whatsapp \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: $WEBHOOK_SECRET" \
+  -d '{"typeWebhook":"incomingMessageReceived","instanceData":{"idInstance":1101000001,"wid":"1101000001@c.us","typeInstance":"whatsapp"},"timestamp":1761935300,"idMessage":"TEST-0002","senderData":{"chatId":"22900000000@c.us","sender":"22900000000@c.us","chatName":"Gérant"},"messageData":{"typeMessage":"textMessage","textMessageData":{"textMessage":"VALIDER CMD-REMPLACER"}}}'
+```
+
+Test de sécurité (doit répondre 401 si `WEBHOOK_SECRET` est défini) :
+
+```
+curl -s -o /dev/null -w "%{http_code}\n" -X POST https://<votre-worker>/webhook/whatsapp -H "Content-Type: application/json" -d '{}'
+```
+
+### Tests Palier 3
+
+```
+pnpm run test:palier3
+```
+
+Les tests couvrent le parsing des notifications, le client Green API (URL, reprises, erreurs non réessayables), la déduplication KV, le dispatch vers le Manager, la validation humaine par le gérant et le routage HTTP.
+
+Limites connues : la cohérence KV est éventuelle (une même notification envoyée deux fois très rapidement peut être traitée deux fois). Le compteur de validations du HITL est en mémoire et redémarre à chaque requête ; les commandes sont identifiées par leur référence `CMD-...` en D1.
+
 ## Outils
 
 - TypeScript
 - Cloudflare Workers et Wrangler
 - Green API (WhatsApp)
-- tsx (exécution locale de la démo)
+- tsx (exécution locale de la démo et des tests)
 
 ## Installation
 
@@ -126,7 +227,8 @@ pnpm typecheck
 pnpm run demo:palier1            # démo du Palier 1
 pnpm run demo:palier2            # démo du Palier 2
 pnpm run test:palier2            # tests du Palier 2
-pnpm deploy                      # déploiement sur Cloudflare
+pnpm run test:palier3            # tests du Palier 3
+pnpm run deploy                  # déploiement sur Cloudflare
 ```
 
-Les secrets (identifiant et jeton d'instance Green API, clé d'API LLM) doivent être stockés dans `.dev.vars` en local et via `wrangler secret put` en production.
+Les secrets (identifiant et jeton d'instance Green API, secret du webhook, numéro du gérant, clé d'API LLM) doivent être stockés dans `.dev.vars` en local et via `wrangler secret put` en production.
