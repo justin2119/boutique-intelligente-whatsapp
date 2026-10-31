@@ -55,9 +55,47 @@ Modules :
 - L'agent vérifie le stock, propose une alternative en cas de rupture, calcule la livraison et convertit le total.
 - L'agent ne finalise pas la commande sans accord explicite du client.
 
-Palier 2 et Palier 3 : (à compléter)
+## Palier 2 : architecture multi-agents
 
-## Démo et trace
+Le Palier 2 remplace l'agent unique par un orchestrateur qui délègue à quatre agents spécialisés. Le code est dans `src/agents/` et les types dans `src/types/palier2.ts`.
+
+- Manager (`manager-agent.ts`) : classe l'intention du message (`product_inquiry`, `delivery_inquiry`, `order_request`, `unknown`), lit la quantité et l'option de livraison (standard ou express), décide des délégations, agrège les résultats et déclenche la validation humaine pour toute commande.
+- Vendeur (`seller-agent.ts`) : recherche le produit dans le catalogue par termes, vérifie le stock pour la quantité demandée et, en cas de rupture, propose les alternatives déclarées dans le catalogue qui sont en stock.
+- Logisticien (`logistics-agent.ts`) : calcule les frais et le délai pour une zone. Standard : tarif de base de `delivery-zones.json`. Express : frais multipliés par 1,5 (arrondi), délai réduit d'un jour avec un minimum de 1 jour. Les lieux ambigus (par exemple Cotonou seul) et les zones inconnues sont signalés.
+- Formateur WhatsApp (`formatter-agent.ts`) : rédige la réponse en français, avec le ton d'un commerçant du marché Dantokpa, des puces, le détail des montants (articles, livraison, total) et un appel à l'action.
+
+Les montants sont au format FCFA (`formatFcfa` dans `normalize.ts`).
+
+## Palier 2 : supervision humaine (HITL)
+
+Toute commande assemblée par le Manager est enregistrée dans le validateur (`hitl.ts`) avec le statut `PENDING_HUMAN_VALIDATION`. La commande n'est pas finalisée sans décision explicite :
+
+1. Le Manager assemble le brouillon (référence `CMD-...`, lignes, sous-total, frais de livraison, total, délai) et l'enregistre (`VAL-0001`, `VAL-0002`, ...).
+2. Le client reçoit un récapitulatif avec la mention qu'une validation est en cours.
+3. Une décision humaine (gérant ou client) passe la commande à `CONFIRMED` (approuvée) ou `REJECTED` (refusée).
+4. Une validation déjà traitée ne peut pas être décidée une seconde fois : le système renvoie une erreur.
+
+Le Manager ne met en validation que si le produit est disponible et la livraison chiffrée. Sinon la commande n'est pas assemblée.
+
+## Palier 2 : démo, trace et tests
+
+Le scénario de démo (`src/demo-palier2.ts`) enchaîne une demande de « super wax vert » pour 2 pagnes livrés à Dantokpa en express (SW-003 en rupture, alternative SW-002), puis une commande de 2 x SW-002 en express, puis la validation humaine.
+
+Lancer la démo :
+
+```
+pnpm run demo:palier2
+```
+
+Lancer les tests du Palier 2 (routage du Manager, alternatives du Vendeur, frais standard et express, transitions HITL) :
+
+```
+pnpm run test:palier2
+```
+
+La trace de ce scénario est documentée dans [docs/traces/trace-palier2.md](docs/traces/trace-palier2.md). Les tests sont dans [tests/palier2.test.ts](tests/palier2.test.ts).
+
+## Palier 1 : démo et trace
 
 Scénario de démo : recherche de "super wax vert" (SW-003 en rupture), proposition de l'alternative SW-002, livraison à Dantokpa, conversion en euros.
 
@@ -86,6 +124,8 @@ cp .dev.vars.example .dev.vars   # renseigner les clés Green API (ne jamais com
 pnpm dev                         # lancement local avec Wrangler
 pnpm typecheck
 pnpm run demo:palier1            # démo du Palier 1
+pnpm run demo:palier2            # démo du Palier 2
+pnpm run test:palier2            # tests du Palier 2
 pnpm deploy                      # déploiement sur Cloudflare
 ```
 
