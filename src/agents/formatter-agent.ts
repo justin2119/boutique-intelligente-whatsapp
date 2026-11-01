@@ -136,6 +136,7 @@ function orderSection(validation: ValidationRecord, conditions: string[]): strin
     `• Frais de livraison : ${formatFcfa(draft.deliveryFeeXof)}`,
     `*Total : ${formatFcfa(draft.totalXof)}*`,
     `• Livraison : ${draft.zoneLabel}, ${etaPhrase(draft.etaDays)}`,
+    ...(draft.slot ? [`• Créneau souhaité : ${draft.slot}`] : []),
     ...conditions,
     status,
   ].join("\n");

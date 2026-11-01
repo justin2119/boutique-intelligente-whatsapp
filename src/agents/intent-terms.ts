@@ -37,6 +37,12 @@ const BUDGET_CONTEXT =
 /** « 500 000 FCFA », « 500000 francs ». */
 const BUDGET_CURRENCY = /(\d{1,3}(?: \d{3})+|\d{4,9})\s*(?:fcfa|f cfa|cfa|francs?)\b/;
 
+/**
+ * Créneau de livraison (texte normalisé) : mot-clé de créneau, moment de la journée, « demain »,
+ * ou heure (« 15h », « 7h00-12h00 »).
+ */
+const SLOT_PATTERN = /\b(creneau|matin|apres[- ]?midi|soir|midi|demain|aujourd hui|\d{1,2} ?h(?:\d{2})?)\b/;
+
 function containsAnyWord(message: string, terms: readonly string[]): boolean {
   const text = ` ${normalizeText(message)} `;
   return terms.some((term) => text.includes(` ${normalizeText(term)} `));
@@ -72,4 +78,12 @@ export function stripBudget(message: string): string {
     .replace(BUDGET_CURRENCY, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/** Vrai si le message donne un créneau (« Créneau vers 15h », « 7h00-12h00 », « demain matin »). */
+export function parseSlot(message: string): string | null {
+  if (!SLOT_PATTERN.test(normalizeText(message))) {
+    return null;
+  }
+  return message.trim().slice(0, 120);
 }

@@ -32,6 +32,8 @@ export interface OrderDraft {
   readonly deliveryFeeXof: number;
   readonly totalXof: number;
   readonly etaDays: number;
+  /** Créneau de livraison donné par le client (texte libre), ou null. */
+  readonly slot?: string | null;
 }
 
 export type OrderStatus = "PENDING_HUMAN_VALIDATION" | "CONFIRMED" | "REJECTED";
@@ -74,6 +76,10 @@ export interface ConversationContext {
   readonly lastQuantity?: number | null;
   readonly lastZoneTerm?: string | null;
   readonly lastOption?: DeliveryOption | null;
+  /** Dernier créneau donné par le client. */
+  readonly lastSlot?: string | null;
+  /** Vrai une fois une commande envoyée en validation pour le produit en cours (évite les doublons). */
+  readonly orderPlaced?: boolean;
 }
 
 export interface Palier2Trace {

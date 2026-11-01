@@ -17,7 +17,7 @@ import { HitlValidator } from "./hitl";
 import { LogisticsAgent, askForZoneMessage, detectZoneTerm } from "./logistics-agent";
 import { normalizeText } from "./normalize";
 import { SellerAgent } from "./seller-agent";
-import { hasFabricTerm, hasTechTerm, parseBudget, stripBudget } from "./intent-terms";
+import { hasFabricTerm, hasTechTerm, parseBudget, parseSlot, stripBudget } from "./intent-terms";
 
 export interface ManagerDeps {
   readonly catalog: Catalog;
@@ -100,20 +100,23 @@ export class ManagerAgent {
     const delegations: Delegation[] = [];
     const events: string[] = [];
 
-    const intent = classifyIntent(message);
+    let intent: Intent = classifyIntent(message);
+    // Créneau donné par le client (« Créneau vers 15h », « 7h00-12h00 », « demain matin »).
+    const slot = parseSlot(message);
     const quantity = mentionsQuantity(message) ? parseQuantity(message) : (context.lastQuantity ?? 1);
     const budget = parseBudget(message);
     const explicitOption: DeliveryOption | null = /express|urgent|vite|rapide/.test(normalizeText(message)) ? "express" : null;
     const option: DeliveryOption = explicitOption ?? context.lastOption ?? "standard";
     events.push(
-      `Manager : intention « ${intent} », quantité ${quantity}, budget ${budget ?? "non précisé"}, option de livraison ${option}.`,
+      `Manager : intention « ${intent} », quantité ${quantity}, budget ${budget ?? "non précisé"}, option de livraison ${option}, créneau ${slot ?? "non précisé"}.`,
     );
 
     const hasContextProduct = context.lastProductId !== undefined && context.lastProductId !== null;
     // Produit nouvellement cité dans le message.
     const freshResult = seller.recommend(message, quantity);
-    // Sans nouveau produit cité, on reprend celui de la conversation (question de suivi, livraison, prix, usage).
-    const reuseContext = hasContextProduct && freshResult.kind === "not_found" && intent !== "order_request";
+    // Sans nouveau produit cité, on reprend celui de la conversation (question de suivi, livraison, prix, usage, créneau).
+    const reuseContext =
+      hasContextProduct && freshResult.kind === "not_found" && (intent !== "order_request" || slot !== null);
     const sellerResult: SellerResult = reuseContext
       ? seller.byId(context.lastProductId as string, quantity)
       : freshResult;
@@ -138,11 +141,23 @@ export class ManagerAgent {
       });
     }
 
+    // Le client répond au créneau demandé après le devis : la commande passe en validation humaine.
+    // Un seul ordre par produit : une fois la commande envoyée, un nouveau créneau ne la recrée pas.
+    if (
+      slot !== null &&
+      context.orderPlaced !== true &&
+      sellerResult.kind === "available" &&
+      logisticsResult?.kind === "quoted"
+    ) {
+      intent = "order_request";
+    }
+
+    const slotForDraft = slot ?? context.lastSlot ?? null;
     let draft: OrderDraft | null = null;
     let validation: ValidationRecord | null = null;
     if (intent === "order_request") {
       if (sellerResult.kind === "available" && logisticsResult?.kind === "quoted") {
-        draft = this.buildDraft(sellerResult, logisticsResult);
+        draft = this.buildDraft(sellerResult, logisticsResult, slotForDraft);
         validation = hitl.submit(draft);
         events.push(
           `Commande ${draft.reference} assemblée : statut ${validation.status} (${validation.id}). Validation humaine requise avant finalisation.`,
@@ -168,7 +183,15 @@ export class ManagerAgent {
       task: "Rédiger la réponse WhatsApp",
       output: `${customerMessage.length} caractères`,
     });
-    return { message, delegations, aggregated, customerMessage, events, context: nextContext(sellerResult, quantity, zoneTerm, option) };
+    const orderPlaced = validation !== null || (freshResult.kind === "not_found" && context.orderPlaced === true);
+    return {
+      message,
+      delegations,
+      aggregated,
+      customerMessage,
+      events,
+      context: nextContext(sellerResult, quantity, zoneTerm, option, slotForDraft, orderPlaced),
+    };
   }
 
   /** Enregistre la décision humaine (gérant ou client) puis produit le message final. */
@@ -187,6 +210,7 @@ export class ManagerAgent {
   private buildDraft(
     seller: Extract<SellerResult, { kind: "available" }>,
     logistics: Extract<LogisticsResult, { kind: "quoted" }>,
+    slot: string | null,
   ): OrderDraft {
     const reference = `CMD-${this.deps.clock().getTime().toString(36).toUpperCase()}`;
     return {
@@ -207,6 +231,7 @@ export class ManagerAgent {
       deliveryFeeXof: logistics.feeXof,
       totalXof: seller.subtotalXof + logistics.feeXof,
       etaDays: logistics.etaDays,
+      slot,
     };
   }
 }
@@ -221,6 +246,8 @@ function nextContext(
   quantity: number,
   zoneTerm: string | null,
   option: DeliveryOption,
+  slot: string | null,
+  orderPlaced: boolean,
 ): ConversationContext {
   const product: Product | null = sellerResult.kind === "not_found" ? null : sellerResult.product;
   return {
@@ -228,6 +255,8 @@ function nextContext(
     lastQuantity: quantity,
     lastZoneTerm: zoneTerm,
     lastOption: option,
+    lastSlot: slot,
+    orderPlaced,
   };
 }
 
