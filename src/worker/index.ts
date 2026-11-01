@@ -31,7 +31,7 @@ import {
   type NonTextMediaType,
 } from "../lib/green-api";
 import type { Catalog } from "../types";
-import type { OrderDraft, OrderStatus, ValidationRecord } from "../types/palier2";
+import type { ConversationContext, DeliveryOption, OrderDraft, OrderStatus, ValidationRecord } from "../types/palier2";
 
 /** Liaisons et variables de l'environnement Worker. */
 export interface WorkerEnv {
@@ -80,6 +80,9 @@ export class StorageConfigError extends Error {
 }
 
 const MANAGER_COMMAND = /^(VALIDER|REFUSER)\s+(CMD-[A-Z0-9]+)$/i;
+
+/** Durée de vie du contexte de conversation (le client revient souvent dans les 48 h). */
+export const CONTEXT_TTL_SECONDS = 48 * 60 * 60;
 
 const NON_TEXT_REPLIES: Record<NonTextMediaType, string> = {
   audio:
@@ -168,6 +171,41 @@ async function appendHistory(kv: KvLike, phone: string, entries: readonly Histor
   await kv.put(key, JSON.stringify(next), { expirationTtl: HISTORY_TTL_SECONDS });
 }
 
+/** Clé KV du contexte de conversation d'un client (numéro de téléphone). */
+export function contextKey(phone: string): string {
+  return `context:${phone}`;
+}
+
+/** Lit le contexte sauvegardé. Une valeur absente ou illisible donne un contexte vide (jamais bloquant). */
+export async function readContext(kv: KvLike, phone: string): Promise<ConversationContext> {
+  const raw = await kv.get(contextKey(phone));
+  if (raw === null) {
+    return {};
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isRecord(parsed) ? (parsed as ConversationContext) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Sauvegarde le contexte mis à jour, avec une durée de vie de 48 h. */
+export async function writeContext(kv: KvLike, phone: string, context: ConversationContext): Promise<void> {
+  await kv.put(contextKey(phone), JSON.stringify(context), { expirationTtl: CONTEXT_TTL_SECONDS });
+}
+
+/** Clés et types validés avant réutilisation : un contexte corrompu ne doit jamais casser une réponse. */
+export function sanitizeContext(value: ConversationContext): ConversationContext {
+  const option: DeliveryOption | null = value.lastOption === "express" || value.lastOption === "standard" ? value.lastOption : null;
+  return {
+    lastProductId: typeof value.lastProductId === "string" ? value.lastProductId : null,
+    lastQuantity: typeof value.lastQuantity === "number" && value.lastQuantity > 0 ? value.lastQuantity : null,
+    lastZoneTerm: typeof value.lastZoneTerm === "string" ? value.lastZoneTerm : null,
+    lastOption: option,
+  };
+}
+
 async function handleCustomerMessage(message: IncomingTextMessage, deps: WorkerDeps): Promise<WebhookOutcome> {
   const { catalog, clock, storage, sender, config } = deps;
   const hitl = new HitlValidator(clock);
@@ -179,7 +217,8 @@ async function handleCustomerMessage(message: IncomingTextMessage, deps: WorkerD
     hitl,
     clock,
   });
-  const trace = await manager.handle(message.text);
+  const previous = sanitizeContext(await readContext(storage.kv, message.senderPhone));
+  const trace = await manager.handle(message.text, previous);
 
   let orderReference: string | null = null;
   const validation = trace.aggregated.validation;
@@ -197,6 +236,9 @@ async function handleCustomerMessage(message: IncomingTextMessage, deps: WorkerD
     { role: "customer", text: message.text, at: now },
     { role: "assistant", text: trace.customerMessage, at: now },
   ]);
+  if (trace.context !== undefined) {
+    await writeContext(storage.kv, message.senderPhone, trace.context);
+  }
   return { status: "replied", messageId: message.messageId, orderReference };
 }
 
