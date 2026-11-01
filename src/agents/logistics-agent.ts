@@ -79,16 +79,16 @@ export function detectZoneTerm(message: string, zones: readonly DeliveryZone[]):
   return best;
 }
 
-/** Message quand le client parle de livraison sans lieu précis : on demande le quartier ou la ville avec enthousiasme. */
+/** Message lorsque le client demande une livraison sans lieu précis : on sollicite le quartier ou la ville. */
 export function askForZoneMessage(zones: readonly DeliveryZone[]): string {
   const lome = zones.filter((zone) => normalizeText(zone.city) === "lome").map((zone) => zone.zone);
   const cotonou = zones.filter((zone) => normalizeText(zone.city) === "cotonou").map((zone) => zone.zone);
   return [
-    "Avec plaisir, on livre partout ! 🚚",
-    `📍 *À Lomé* : ${lome.join(", ")} (à partir de 1 000 FCFA, souvent le jour même ou J+1).`,
-    `📍 *Dans les régions* : Tsévié, Kpalimé, Vogan, Atakpamé, Sokodé, Kara, Dapaong (2 500 à 4 500 FCFA).`,
-    `📍 *Au Bénin* : ${cotonou.join(", ")} et autres villes (sur demande).`,
-    "Dans quel quartier ou quelle ville êtes-vous ? Je vous donne le tarif exact tout de suite 😊",
+    "*Zones de livraison*",
+    `• Lomé : ${lome.join(", ")} (à partir de 1 000 FCFA, livraison le jour même ou sous 24 heures selon la zone).`,
+    "• Régions du Togo : Tsévié, Kpalimé, Vogan, Atakpamé, Sokodé, Kara, Dapaong (de 2 500 à 4 500 FCFA).",
+    `• Bénin : ${cotonou.join(", ")} et autres villes sur demande.`,
+    "Merci de nous indiquer votre quartier ou votre ville afin que nous puissions vous communiquer le tarif exact.",
   ].join("\n");
 }
 
