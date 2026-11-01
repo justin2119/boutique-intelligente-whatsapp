@@ -4,7 +4,9 @@
  * - extract()  : extraction structurée, température 0, max_tokens 150, réponse JSON.
  * - advise()   : conseil consultatif, température 0.2, max_tokens 300, catalogue compacté.
  * - rephrase() : reformule un message déterministe en ton humain, température 0.3, max_tokens 200.
- *   Les faits sont vérifiés (montants FCFA, références produit, aucun nombre ajouté) ; sinon le message d'origine est gardé.
+ *   Garde-fou : un montant FCFA modifié, un nombre inventé ou une référence produit altérée fait rejeter la
+ *   reformulation (le message d'origine est gardé). Une référence ou un détail omis n'est PAS un motif de rejet.
+ *   Chaque issue est journalisée avec le préfixe [LlmService].
  * Sans RODIUM_API_KEY, aucun service n'est créé : le comportement reste strictement déterministe.
  */
 import type { Product } from "../types";
@@ -30,6 +32,8 @@ export interface LlmServiceConfig {
   readonly model?: string;
   readonly fetchImpl?: typeof fetch;
   readonly timeoutMs?: number;
+  /** Journal optionnel (par défaut console). Injectable pour les tests. */
+  readonly logger?: (line: string) => void;
 }
 
 export interface LlmChatMessage {
@@ -50,6 +54,12 @@ export interface RodiumLlmService {
 
 interface ChatCompletionResponse {
   readonly choices?: readonly { readonly message?: { readonly content?: string | null } }[];
+}
+
+/** Résultat détaillé de la vérification des faits (utilisé pour les logs). */
+export interface FactCheck {
+  readonly ok: boolean;
+  readonly reason: string;
 }
 
 /**
@@ -114,48 +124,58 @@ function cleanNumber(raw: string): string {
   return raw.replace(/[\s\u00a0.,]/g, "").replace(/^0+(?=\d)/, "");
 }
 
-/** Montants suivis de « FCFA » (avec ou sans espaces de milliers). Les montants sont les faits critiques. */
+/** Montants suivis de « FCFA » (avec ou sans espaces de milliers). */
 export function extractAmounts(text: string): string[] {
   const matches = Array.from(text.matchAll(/(\d[\d\s\u00a0.,]*\d|\d)\s*FCFA/gi));
   return matches.map((m) => cleanNumber(m[1] ?? "")).filter((value) => value !== "").sort();
 }
 
-/** Tous les nombres d'un texte, nettoyés. Un nombre absent de l'original signale un ajout (remise, prix inventé). */
+/** Tous les nombres d'un texte, nettoyés. */
 export function extractAllNumbers(text: string): Set<string> {
   const matches = text.match(/\d[\d\s\u00a0.,]*\d|\d/g) ?? [];
   return new Set(matches.map(cleanNumber).filter((value) => value !== ""));
 }
 
-/** Références produit (ex. SW-002, CMD-ABC) : elles doivent toutes survivre à la reformulation. */
+/** Références produit (ex. SW-002, PC-003, CMD-ABC) : extraites pour contrôler qu'aucune n'est altérée. */
 export function extractCodes(text: string): string[] {
   return (text.match(/[A-Z]{2,}-[A-Z0-9]+/g) ?? []).sort();
 }
 
 /**
- * Vrai si la reformulation conserve les faits du message d'origine :
- * - même suite de montants FCFA (aucun montant modifié ou supprimé) ;
- * - aucun nombre nouveau (pas de remise ni de prix inventé) ;
- * - toutes les références produit présentes.
- * Les nombres écrits en lettres (« une unité », « un jour ») ou un compte retiré sont permis :
- * ce ne sont pas des faits modifiés.
+ * Vérifie qu'une reformulation ne modifie pas les faits. Rejette seulement :
+ * - un montant FCFA modifié, ajouté ou supprimé (le prix est ce que le client paie) ;
+ * - un nombre qui n'existait pas dans l'original (remise ou prix inventé) ;
+ * - une référence produit qui apparaît dans la reformulation mais pas dans l'original (code altéré ou inventé).
+ * N'exige PAS que chaque référence de l'original soit répétée : une tournure naturelle peut omettre « réf. PC-003 ».
+ * Les quantités et délais écrits en lettres (« une unité », « un jour ») sont acceptés.
  */
-export function preservesFacts(original: string, rephrased: string): boolean {
+export function checkFacts(original: string, rephrased: string): FactCheck {
   const amountsOriginal = extractAmounts(original);
   const amountsRephrased = extractAmounts(rephrased);
   if (amountsOriginal.length !== amountsRephrased.length) {
-    return false;
+    return { ok: false, reason: `montants FCFA : ${amountsOriginal.length} dans l'original, ${amountsRephrased.length} dans la reformulation` };
   }
   if (amountsOriginal.some((value, index) => value !== amountsRephrased[index])) {
-    return false;
+    return { ok: false, reason: "montant FCFA modifié" };
   }
   const numbersOriginal = extractAllNumbers(original);
   for (const value of extractAllNumbers(rephrased)) {
     if (!numbersOriginal.has(value)) {
-      return false;
+      return { ok: false, reason: `nombre ajouté par la reformulation : ${value}` };
     }
   }
-  const rephrasedCodes = new Set(extractCodes(rephrased));
-  return extractCodes(original).every((code) => rephrasedCodes.has(code));
+  const codesOriginal = new Set(extractCodes(original));
+  for (const code of extractCodes(rephrased)) {
+    if (!codesOriginal.has(code)) {
+      return { ok: false, reason: `référence absente de l'original : ${code}` };
+    }
+  }
+  return { ok: true, reason: "faits conservés" };
+}
+
+/** Vrai si la reformulation conserve les faits (voir checkFacts). */
+export function preservesFacts(original: string, rephrased: string): boolean {
+  return checkFacts(original, rephrased).ok;
 }
 
 const EXTRACT_SYSTEM = (fields: readonly string[]): string =>
@@ -165,21 +185,23 @@ const ADVICE_SYSTEM = (catalog: string): string =>
   `Vendeur WhatsApp pagnes, marché Dantokpa. Français, 3 phrases max, pas de markdown. Ne cite que ces produits (id|nom|prix|stock|catégorie), jamais de prix ou stock inventé. Oriente vers une demande précise.\nCatalogue:\n${catalog}`;
 
 /**
- * Consigne de reformulation. Les montants en FCFA, les références produit et les délais doivent
- * garder leur valeur. Les quantités peuvent être écrites en lettres (« une unité »). Aucune remise ni promesse n'est ajoutée.
+ * Consigne de reformulation. Les montants en FCFA, les noms de produit et les délais doivent garder leur valeur.
+ * Les références produit peuvent être omises, mais jamais modifiées. Aucune remise ni promesse n'est ajoutée.
  */
 const REPHRASE_SYSTEM =
   "Tu reformules un message de la boutique JulieShop (Togo) pour WhatsApp. " +
   "Français, vouvoiement, ton poli, professionnel et commercial. 4 phrases au plus, pas de markdown. " +
-  "Conserve à l'identique chaque montant en FCFA, chaque référence produit (ex. SW-002, CMD-...), chaque nom de produit et chaque délai. " +
+  "Conserve à l'identique chaque montant en FCFA, chaque nom de produit et chaque délai. " +
+  "Si tu cites une référence produit (ex. PC-003, SW-002), recopie-la exactement, sans la modifier. " +
   "Une quantité ou un délai peut être écrit en lettres (ex. « une unité », « un jour »). " +
-  "N'ajoute aucune remise, aucune promotion, aucun prix, aucun nombre nouveau et aucune promesse. Ne retire aucune information importante. Réponds uniquement avec le message reformulé.";
+  "N'ajoute aucune remise, aucune promotion, aucun prix, aucun nombre nouveau et aucune promesse. Réponds uniquement avec le message reformulé.";
 
 export function createRodiumLlmService(config: LlmServiceConfig): RodiumLlmService {
   const baseUrl = (config.baseUrl ?? RODIUM_DEFAULT_BASE_URL).replace(/\/$/, "");
   const model = config.model ?? RODIUM_DEFAULT_MODEL;
   const fetchImpl = config.fetchImpl ?? fetch;
   const timeoutMs = config.timeoutMs ?? 8000;
+  const log = config.logger ?? ((line: string) => console.log(line));
 
   async function chat(messages: readonly LlmChatMessage[], temperature: number, maxTokens: number): Promise<string | null> {
     const controller = new AbortController();
@@ -225,6 +247,7 @@ export function createRodiumLlmService(config: LlmServiceConfig): RodiumLlmServi
     /**
      * Reformule un message déterministe. Ne lève jamais d'exception : en cas d'erreur, de délai,
      * de réponse vide ou de faits modifiés, le message d'origine est renvoyé tel quel.
+     * Chaque issue est journalisée : [LlmService] rephrase ok | rejected | empty | error.
      */
     async rephrase(rawMessage, context) {
       if (rawMessage.trim() === "") {
@@ -243,11 +266,20 @@ export function createRodiumLlmService(config: LlmServiceConfig): RodiumLlmServi
           REPHRASE_TEMPERATURE,
           REPHRASE_MAX_TOKENS,
         );
-        if (content === null || !preservesFacts(rawMessage, content)) {
+        if (content === null) {
+          log("[LlmService] rephrase empty : réponse sans contenu, message d'origine conservé");
           return rawMessage;
         }
+        const check = checkFacts(rawMessage, content);
+        if (!check.ok) {
+          log(`[LlmService] rephrase rejected : ${check.reason}, message d'origine conservé`);
+          return rawMessage;
+        }
+        log("[LlmService] rephrase ok");
         return content;
-      } catch {
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "erreur inconnue";
+        log(`[LlmService] rephrase error : ${reason}, message d'origine conservé`);
         return rawMessage;
       }
     },
