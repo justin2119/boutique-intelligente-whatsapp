@@ -2,9 +2,9 @@ import type { AggregatedResponse, LogisticsResult, SellerResult, ValidationRecor
 import { formatFcfa } from "./normalize";
 import { SALES_POLICY, policyLines, type SalesPolicy } from "./sales-policy";
 
-/** Libellé du délai : « livraison le jour même » pour 0 jour, sinon « délai estimé de N jour(s) ». */
+/** Libellé du délai : « livraison le jour même » pour 0 jour, sinon « délai estimé N jour(s) ». */
 export function etaPhrase(etaDays: number): string {
-  return etaDays === 0 ? "livraison le jour même" : `délai estimé de ${etaDays} jour(s)`;
+  return etaDays === 0 ? "livraison le jour même" : `délai estimé ${etaDays} jour(s)`;
 }
 
 /** Question de qualification, posée naturellement par un conseiller (jamais de formulaire). */
