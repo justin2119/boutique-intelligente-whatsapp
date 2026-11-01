@@ -68,10 +68,19 @@ export interface AggregatedResponse {
   readonly draft: OrderDraft | null;
 }
 
+/** Mémoire légère d'une conversation client, relue à chaque message (stockée dans le KV). */
+export interface ConversationContext {
+  readonly lastProductId?: string | null;
+  readonly lastQuantity?: number | null;
+  readonly lastZoneTerm?: string | null;
+  readonly lastOption?: DeliveryOption | null;
+}
+
 export interface Palier2Trace {
   readonly message: string;
   readonly delegations: readonly Delegation[];
   readonly aggregated: AggregatedResponse;
   readonly customerMessage: string;
   readonly events: readonly string[];
+  readonly context?: ConversationContext;
 }
