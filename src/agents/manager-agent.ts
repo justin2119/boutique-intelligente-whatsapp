@@ -1,4 +1,4 @@
-import type { Catalog } from "../types";
+import type { Catalog, Product } from "../types";
 import type {
   AggregatedResponse,
   Delegation,
@@ -13,7 +13,7 @@ import type {
 } from "../types/palier2";
 import { FormatterAgent } from "./formatter-agent";
 import { HitlValidator } from "./hitl";
-import { LogisticsAgent, detectZoneTerm } from "./logistics-agent";
+import { LogisticsAgent, askForZoneMessage, detectZoneTerm } from "./logistics-agent";
 import { normalizeText } from "./normalize";
 import { SellerAgent } from "./seller-agent";
 import { hasFabricTerm, hasTechTerm, parseBudget, stripBudget } from "./intent-terms";
@@ -27,11 +27,21 @@ export interface ManagerDeps {
   readonly clock: () => Date;
 }
 
-const ORDER_WORDS: readonly string[] = ["commande", "je prends", "je veux acheter", "confirme", "reserve", "je valide"];
-const DELIVERY_WORDS: readonly string[] = ["livr", "frais", "delai", "express", "zone"];
+/** Contexte de conversation transmis d'un message à l'autre (lu depuis le KV par le worker). */
+export interface ConversationContext {
+  /** Dernier produit recommandé au client (id), pour une réponse de suivi comme « ok, livraison à Bè ». */
+  readonly lastProductId?: string | null;
+  readonly lastQuantity?: number | null;
+  readonly lastZoneTerm?: string | null;
+  readonly lastOption?: DeliveryOption | null;
+}
+
+const ORDER_WORDS: readonly string[] = ["commande", "je prends", "je veux acheter", "confirme", "reserve", "je valide", "je le prends", "je la prends", "ok je prends"];
+const DELIVERY_WORDS: readonly string[] = ["livr", "frais", "delai", "express", "zone", "quartier", "adresse", "domicile", "chez moi"];
 const PRODUCT_WORDS: readonly string[] = [
   "cherche", "wax", "pagne", "motif", "disponible", "couleur", "prix", "stock", "recommande", "conseil",
-  "propose", "montrez", "avez", "voir", "quel", "quelle", "quels", "budget", "moins de",
+  "propose", "montrez", "avez", "voir", "quel", "quelle", "quels", "budget", "moins de", "usage", "besoin",
+  "pour", "comparer", "comparaison", "difference", "meilleur", "vaut",
 ];
 
 /** Termes qui signalent une demande de produit à partir du mot entier (pour « hp », « pc », « core »…). */
@@ -83,6 +93,7 @@ export function stripSpecs(text: string): string {
 /**
  * Agent Manager / Orchestrateur : analyse l'intention, délègue aux spécialistes,
  * agrège les résultats et met toute commande en validation humaine.
+ * Il garde le fil de la conversation : un message de suivi (« livraison à Bè ») réutilise le produit déjà recommandé.
  */
 export class ManagerAgent {
   private readonly deps: ManagerDeps;
@@ -91,20 +102,25 @@ export class ManagerAgent {
     this.deps = deps;
   }
 
-  async handle(message: string): Promise<Palier2Trace> {
+  async handle(message: string, context: ConversationContext = {}): Promise<Palier2Trace> {
     const { seller, logistics, formatter, hitl, catalog } = this.deps;
     const delegations: Delegation[] = [];
     const events: string[] = [];
 
     const intent = classifyIntent(message);
-    const quantity = parseQuantity(message);
+    const quantity = mentionsQuantity(message) ? parseQuantity(message) : (context.lastQuantity ?? 1);
     const budget = parseBudget(message);
-    const option: DeliveryOption = /express|urgent/.test(normalizeText(message)) ? "express" : "standard";
+    const explicitOption: DeliveryOption | null = /express|urgent|vite|rapide/.test(normalizeText(message)) ? "express" : null;
+    const option: DeliveryOption = explicitOption ?? context.lastOption ?? "standard";
     events.push(
       `Manager : intention « ${intent} », quantité ${quantity}, budget ${budget ?? "non précisé"}, option de livraison ${option}.`,
     );
 
-    const sellerResult = seller.recommend(message, quantity);
+    // Suivi : le client ne redit pas le produit, on reprend celui de la conversation.
+    const followUp = intent === "delivery_inquiry" && context.lastProductId !== undefined && context.lastProductId !== null;
+    const sellerResult = followUp
+      ? seller.byId(context.lastProductId as string, quantity)
+      : seller.recommend(message, quantity);
     delegations.push({
       from: "manager",
       to: "seller",
@@ -112,7 +128,7 @@ export class ManagerAgent {
       output: describeSeller(sellerResult),
     });
 
-    const zoneTerm = detectZoneTerm(message, catalog.zones);
+    const zoneTerm = detectZoneTerm(message, catalog.zones) ?? (followUp ? context.lastZoneTerm ?? null : null);
     let logisticsResult: LogisticsResult | null = null;
     if (zoneTerm !== null) {
       logisticsResult = logistics.quote(zoneTerm, option);
@@ -144,15 +160,20 @@ export class ManagerAgent {
       }
     }
 
+    // Livraison demandée sans lieu précis : on demande le quartier de façon engageante.
+    const askZone = intent === "delivery_inquiry" && zoneTerm === null;
     const aggregated: AggregatedResponse = { intent, seller: sellerResult, logistics: logisticsResult, validation, draft };
-    const customerMessage = formatter.compose(aggregated);
+    let customerMessage = formatter.compose(aggregated);
+    if (askZone) {
+      customerMessage = [askForZoneMessage(catalog.zones), customerMessage].filter((part) => part.length > 0).join("\n\n");
+    }
     delegations.push({
       from: "manager",
       to: "formatter",
       task: "Rédiger la réponse WhatsApp",
       output: `${customerMessage.length} caractères`,
     });
-    return { message, delegations, aggregated, customerMessage, events };
+    return { message, delegations, aggregated, customerMessage, events, context: nextContext(sellerResult, quantity, zoneTerm, option) };
   }
 
   /** Enregistre la décision humaine (gérant ou client) puis produit le message final. */
@@ -193,6 +214,26 @@ export class ManagerAgent {
       etaDays: logistics.etaDays,
     };
   }
+}
+
+/** Une quantité n'est lue que si le client la mentionne (sinon on garde celle de la conversation). */
+function mentionsQuantity(message: string): boolean {
+  return /\d{1,3}\s*(pagnes?|pieces?|pcs|ordinateurs?|pc|machines?|unites?)\b/.test(normalizeText(stripBudget(message)));
+}
+
+function nextContext(
+  sellerResult: SellerResult,
+  quantity: number,
+  zoneTerm: string | null,
+  option: DeliveryOption,
+): ConversationContext {
+  const product: Product | null = sellerResult.kind === "not_found" ? null : sellerResult.product;
+  return {
+    lastProductId: product?.id ?? null,
+    lastQuantity: quantity,
+    lastZoneTerm: zoneTerm,
+    lastOption: option,
+  };
 }
 
 function describeSeller(result: SellerResult): string {
