@@ -1,8 +1,10 @@
 /**
  * Service LLM hybride (RodiumAI, API compatible OpenAI).
  * Architecture : règles déterministes d'abord ; le LLM n'est appelé qu'en repli (intention « unknown »).
- * - extract() : extraction structurée, température 0, max_tokens 150, réponse JSON.
- * - advise()  : conseil consultatif, température 0.2, max_tokens 300, catalogue compacté.
+ * - extract()  : extraction structurée, température 0, max_tokens 150, réponse JSON.
+ * - advise()   : conseil consultatif, température 0.2, max_tokens 300, catalogue compacté.
+ * - rephrase() : reformule un message déterministe en ton humain, température 0.3, max_tokens 200.
+ *   Les chiffres sont vérifiés : une reformulation qui altère un montant est rejetée.
  * Sans RODIUM_API_KEY, aucun service n'est créé : le comportement reste strictement déterministe.
  */
 import type { Product } from "../types";
@@ -13,8 +15,10 @@ export const RODIUM_DEFAULT_MODEL = "openai/gpt-6-luna";
 
 export const EXTRACTION_TEMPERATURE = 0;
 export const DIALOGUE_TEMPERATURE = 0.2;
+export const REPHRASE_TEMPERATURE = 0.3;
 export const EXTRACTION_MAX_TOKENS = 150;
 export const ADVICE_MAX_TOKENS = 300;
+export const REPHRASE_MAX_TOKENS = 200;
 /** Nombre maximal de produits injectés dans le prompt de conseil. */
 export const ADVICE_MAX_PRODUCTS = 8;
 /** Nombre maximal de messages d'historique injectés (les plus récents). */
@@ -33,9 +37,15 @@ export interface LlmChatMessage {
   readonly content: string;
 }
 
+export interface RephraseContext {
+  /** Dernier message du client, pour adapter le ton (facultatif). */
+  readonly customerMessage?: string;
+}
+
 export interface RodiumLlmService {
   extract(message: string, allowedFields: readonly string[]): Promise<Record<string, unknown> | null>;
   advise(message: string, history: readonly LlmChatMessage[], catalog: readonly Product[]): Promise<string | null>;
+  rephrase(rawMessage: string, context?: RephraseContext): Promise<string>;
 }
 
 interface ChatCompletionResponse {
@@ -99,11 +109,40 @@ export function parseJsonObject(text: string): Record<string, unknown> | null {
   }
 }
 
+/**
+ * Nombres présents dans un texte, normalisés (sans espaces ni séparateurs de milliers).
+ * Sert à vérifier qu'une reformulation n'a ni ajouté ni modifié un montant.
+ */
+export function extractNumbers(text: string): string[] {
+  const matches = text.match(/\d[\d\s\u00a0.,]*\d|\d/g) ?? [];
+  return matches.map((raw) => raw.replace(/[\s\u00a0.,]/g, "")).filter((value) => value !== "");
+}
+
+/**
+ * Vrai si la reformulation contient exactement les mêmes nombres (multiset) que le message d'origine.
+ * Toute différence (montant changé, remise inventée, quantité modifiée) fait rejeter la reformulation.
+ */
+export function sameNumbers(original: string, rephrased: string): boolean {
+  const a = extractNumbers(original).sort();
+  const b = extractNumbers(rephrased).sort();
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
 const EXTRACT_SYSTEM = (fields: readonly string[]): string =>
   `Extrais les champs du message. JSON seul, clés: ${fields.join(",")}. Absent = null. N'invente rien.`;
 
 const ADVICE_SYSTEM = (catalog: string): string =>
   `Vendeur WhatsApp pagnes, marché Dantokpa. Français, 3 phrases max, pas de markdown. Ne cite que ces produits (id|nom|prix|stock|catégorie), jamais de prix ou stock inventé. Oriente vers une demande précise.\nCatalogue:\n${catalog}`;
+
+/**
+ * Consigne de reformulation. Les montants, quantités, délais, créneaux et noms de produits
+ * doivent rester exactement identiques. Aucune remise ni promesse n'est ajoutée.
+ */
+const REPHRASE_SYSTEM =
+  "Tu reformules un message de la boutique JulieShop (Togo) pour WhatsApp. " +
+  "Français, vouvoiement, ton poli, professionnel et commercial. 4 phrases au plus, pas de markdown. " +
+  "Conserve STRICTEMENT tous les chiffres, montants en FCFA, quantités, délais, créneaux, références CMD-... et noms de produits, à l'identique. " +
+  "N'ajoute aucune remise, aucune promotion, aucun prix, aucune promesse. Ne retire aucune information. Réponds uniquement avec le message reformulé.";
 
 export function createRodiumLlmService(config: LlmServiceConfig): RodiumLlmService {
   const baseUrl = (config.baseUrl ?? RODIUM_DEFAULT_BASE_URL).replace(/\/$/, "");
@@ -151,6 +190,35 @@ export function createRodiumLlmService(config: LlmServiceConfig): RodiumLlmServi
         DIALOGUE_TEMPERATURE,
         ADVICE_MAX_TOKENS,
       );
+    },
+    /**
+     * Reformule un message déterministe. Ne lève jamais d'exception : en cas d'erreur, de délai,
+     * de réponse vide ou de chiffres modifiés, le message d'origine est renvoyé tel quel.
+     */
+    async rephrase(rawMessage, context) {
+      if (rawMessage.trim() === "") {
+        return rawMessage;
+      }
+      const customerLine =
+        context?.customerMessage !== undefined && context.customerMessage.trim() !== ""
+          ? `\nMessage du client : ${context.customerMessage}`
+          : "";
+      try {
+        const content = await chat(
+          [
+            { role: "system", content: REPHRASE_SYSTEM },
+            { role: "user", content: `Message à reformuler :\n${rawMessage}${customerLine}` },
+          ],
+          REPHRASE_TEMPERATURE,
+          REPHRASE_MAX_TOKENS,
+        );
+        if (content === null || !sameNumbers(rawMessage, content)) {
+          return rawMessage;
+        }
+        return content;
+      } catch {
+        return rawMessage;
+      }
     },
   };
 }
