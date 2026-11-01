@@ -3,3 +3,8 @@ GREEN_API_ID_INSTANCE=1101000001
 GREEN_API_TOKEN_INSTANCE=remplacer_par_le_token_green_api
 WEBHOOK_SECRET=remplacer_par_un_secret_long_et_aleatoire
 MANAGER_PHONE=22900000000
+
+# Optionnel : LLM hybride (repli après les règles déterministes). Sans clé, le comportement reste déterministe.
+RODIUM_API_KEY=remplacer_par_la_cle_rodiumai
+RODIUM_BASE_URL=https://api.rodiumai.io/v1
+RODIUM_MODEL=openai/gpt-6-luna

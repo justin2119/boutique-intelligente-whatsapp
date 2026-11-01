@@ -31,6 +31,7 @@ import {
   type IncomingTextMessage,
   type NonTextMediaType,
 } from "../lib/green-api";
+import { createRodiumLlmService, readLlmConfig, type LlmChatMessage, type RodiumLlmService } from "../services/llm-service";
 import type { Catalog } from "../types";
 import type { ConversationContext, DeliveryOption, OrderDraft, OrderStatus, ValidationRecord } from "../types/palier2";
 
@@ -43,6 +44,10 @@ export interface WorkerEnv {
   readonly GREEN_API_BASE_URL?: string;
   readonly WEBHOOK_SECRET?: string;
   readonly MANAGER_PHONE?: string;
+  /** Repli LLM RodiumAI (optionnel). Sans clé, le bot reste entièrement déterministe. */
+  readonly RODIUM_API_KEY?: string;
+  readonly RODIUM_BASE_URL?: string;
+  readonly RODIUM_MODEL?: string;
   readonly ENVIRONMENT?: string;
   readonly NODE_ENV?: string;
 }
@@ -63,6 +68,8 @@ export interface WorkerDeps {
   readonly catalog: Catalog;
   readonly clock: () => Date;
   readonly config: WorkerConfig;
+  /** Repli LLM ; absent quand RODIUM_API_KEY n'est pas défini. */
+  readonly llm?: RodiumLlmService;
 }
 
 export type WebhookOutcome =
@@ -176,6 +183,31 @@ async function appendHistory(kv: KvLike, phone: string, entries: readonly Histor
   await kv.put(key, JSON.stringify(next), { expirationTtl: HISTORY_TTL_SECONDS });
 }
 
+/**
+ * Historique court pour le repli LLM. Toute erreur de lecture donne un historique vide
+ * (le repli n'est jamais bloquant).
+ */
+export async function readHistoryForLlm(kv: KvLike, phone: string): Promise<LlmChatMessage[]> {
+  try {
+    const raw = await kv.get(`conversation:${phone}`);
+    if (raw === null) {
+      return [];
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .filter(isHistoryEntry)
+      .map((entry): LlmChatMessage => ({
+        role: entry.role === "customer" ? "user" : "assistant",
+        content: entry.text,
+      }));
+  } catch {
+    return [];
+  }
+}
+
 /** Clé KV du contexte de conversation d'un client (numéro de téléphone). */
 export function contextKey(phone: string): string {
   return `context:${phone}`;
@@ -273,6 +305,8 @@ async function handleCustomerMessage(message: IncomingTextMessage, deps: WorkerD
   }
 
   const hitl = new HitlValidator(clock);
+  // L'historique n'est lu que si le repli LLM est actif (aucune lecture KV supplémentaire sinon).
+  const history = deps.llm !== undefined ? await readHistoryForLlm(storage.kv, message.senderPhone) : [];
   const manager = new ManagerAgent({
     catalog,
     seller: new SellerAgent(catalog),
@@ -280,8 +314,10 @@ async function handleCustomerMessage(message: IncomingTextMessage, deps: WorkerD
     formatter: new FormatterAgent(),
     hitl,
     clock,
+    ...(deps.llm !== undefined ? { llm: deps.llm } : {}),
   });
-  const trace = await manager.handle(message.text, previous);
+  console.log(`[Worker] customer message : llm ${deps.llm !== undefined ? "active" : "absent"}`);
+  const trace = await manager.handle(message.text, previous, history);
 
   let orderReference: string | null = null;
   const validation = trace.aggregated.validation;
@@ -421,6 +457,7 @@ function isExplicitDevMode(env: WorkerEnv): boolean {
 /**
  * Construit les dépendances. Fail-closed : sans liaisons KV/D1, la mémoire n'est utilisée
  * que dans les modes explicitement development/test ; sinon StorageConfigError est levée.
+ * Le repli LLM n'est créé que si RODIUM_API_KEY est défini.
  */
 export function buildDeps(env: WorkerEnv, sender: OutboundSender, clock: () => Date = () => new Date()): WorkerDeps {
   let storage: AppStorage;
@@ -432,6 +469,9 @@ export function buildDeps(env: WorkerEnv, sender: OutboundSender, clock: () => D
   } else {
     throw new StorageConfigError();
   }
+  console.log(`[Worker] RODIUM_API_KEY present: ${Boolean(env.RODIUM_API_KEY && env.RODIUM_API_KEY.trim() !== "")}`);
+  const llmConfig = readLlmConfig(env);
+  const llm = llmConfig !== null ? createRodiumLlmService(llmConfig) : undefined;
   return {
     storage,
     sender,
@@ -442,6 +482,7 @@ export function buildDeps(env: WorkerEnv, sender: OutboundSender, clock: () => D
       webhookSecret: env.WEBHOOK_SECRET,
       managerPhone: normalizePhone(env.MANAGER_PHONE),
     },
+    ...(llm !== undefined ? { llm } : {}),
   };
 }
 
