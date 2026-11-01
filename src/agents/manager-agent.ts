@@ -61,7 +61,7 @@ export function classifyIntent(message: string): Intent {
 }
 
 /**
- * Extrait la quantité demandée ("2 pagnes", "2 pièces"), 1 par défaut.
+ * Extrait la quantité demandée ("2 unités", "2 ordinateurs"), 1 par défaut.
  * Les montants (budget) et les spécifications (16 Go, 1 To, 3 GHz, 14 pouces) ne sont pas des quantités.
  */
 export function parseQuantity(message: string): number {
@@ -85,7 +85,7 @@ export function stripSpecs(text: string): string {
 /**
  * Agent Manager / Orchestrateur : analyse l'intention, délègue aux spécialistes,
  * agrège les résultats et met toute commande en validation humaine.
- * Il garde le fil de la conversation : un message de suivi (« livraison à Bè ») réutilise le produit déjà recommandé.
+ * Un seul message est produit par tour. Le contexte (produit, zone, option) est repris pour les suivis.
  */
 export class ManagerAgent {
   private readonly deps: ManagerDeps;
@@ -152,13 +152,10 @@ export class ManagerAgent {
       }
     }
 
-    // Livraison demandée sans lieu précis : on demande le quartier de façon engageante.
+    // Livraison demandée sans lieu précis : une seule question, formulée par le manager.
     const askZone = intent === "delivery_inquiry" && zoneTerm === null;
     const aggregated: AggregatedResponse = { intent, seller: sellerResult, logistics: logisticsResult, validation, draft };
-    let customerMessage = formatter.compose(aggregated);
-    if (askZone) {
-      customerMessage = [askForZoneMessage(catalog.zones), customerMessage].filter((part) => part.length > 0).join("\n\n");
-    }
+    const customerMessage = askZone ? askForZoneMessage(catalog.zones) : formatter.compose(aggregated);
     delegations.push({
       from: "manager",
       to: "formatter",
