@@ -6,7 +6,7 @@ export function etaPhrase(etaDays: number): string {
   return etaDays === 0 ? "livraison le jour même" : `délai estimé ${etaDays} jour(s)`;
 }
 
-/** Agent Éditeur / Formateur WhatsApp : ton de commerçant béninois, mise en forme WhatsApp (*gras*, emojis). */
+/** Agent Éditeur / Formateur WhatsApp : ton accueillant de JulieShop 🇹🇬, mise en forme WhatsApp (*gras*, emojis). */
 export class FormatterAgent {
   compose(aggregated: AggregatedResponse): string {
     const sections: string[] = [];
@@ -20,9 +20,9 @@ export class FormatterAgent {
       sections.push(orderSection(aggregated.validation));
     }
     if (sections.length === 0) {
-      sections.push("Dites-moi le modèle de pagne qui vous intéresse, la quantité et le lieu de livraison 😊");
+      sections.push("Dites-moi le modèle qui vous intéresse, la quantité et le lieu de livraison 😊");
     }
-    return ["Bonjour 🙏🏾", ...sections, "Merci de votre confiance, à bientôt sur Dantokpa 🧵🇧🇯"].join("\n\n");
+    return ["Bonjour 🙏🏾 Bienvenue chez JulieShop 🇹🇬", ...sections, "Merci de votre confiance, à très bientôt chez JulieShop 🇹🇬"].join("\n\n");
   }
 }
 
@@ -40,12 +40,12 @@ function sellerSection(result: SellerResult): string {
           lines.push(`• *${alt.name}* (${alt.id}) : ${formatFcfa(alt.priceXof)} l'unité, ${alt.stock} disponible(s)`);
         }
       } else {
-        lines.push("Je peux vérifier d'autres coloris pour vous.");
+        lines.push("Je peux vérifier d'autres modèles pour vous.");
       }
       return lines.join("\n");
     }
     case "not_found":
-      return "🤔 Je ne retrouve pas ce modèle dans la boutique. Pouvez-vous préciser la couleur ou le motif ?";
+      return "🤔 Je ne retrouve pas ce modèle dans la boutique. Pouvez-vous préciser la marque, le modèle ou l'usage (bureautique, gaming, création) ?";
   }
 }
 
@@ -58,7 +58,7 @@ function logisticsSection(result: LogisticsResult): string {
     case "ambiguous":
       return `📍 Pour calculer les frais, précisez le quartier parmi : ${result.candidates.join(", ")}.`;
     case "unknown_zone":
-      return `📍 Je n'ai pas encore de tarif pour « ${result.query} ». Précisez la ville ou le quartier (Cotonou, Calavi, Porto-Novo ou Lomé).`;
+      return `📍 Je n'ai pas encore de tarif pour « ${result.query} ». Précisez la ville ou le quartier (Lomé, Tsévié, Kpalimé, Vogan, Atakpamé, Sokodé, Kara, Dapaong) ou Cotonou, Calavi, Porto-Novo.`;
   }
 }
 
