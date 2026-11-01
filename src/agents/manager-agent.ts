@@ -1,6 +1,7 @@
 import type { Catalog, Product } from "../types";
 import type {
   AggregatedResponse,
+  ConversationContext,
   Delegation,
   DeliveryOption,
   Intent,
@@ -25,15 +26,6 @@ export interface ManagerDeps {
   readonly formatter: FormatterAgent;
   readonly hitl: HitlValidator;
   readonly clock: () => Date;
-}
-
-/** Contexte de conversation transmis d'un message à l'autre (lu depuis le KV par le worker). */
-export interface ConversationContext {
-  /** Dernier produit recommandé au client (id), pour une réponse de suivi comme « ok, livraison à Bè ». */
-  readonly lastProductId?: string | null;
-  readonly lastQuantity?: number | null;
-  readonly lastZoneTerm?: string | null;
-  readonly lastOption?: DeliveryOption | null;
 }
 
 const ORDER_WORDS: readonly string[] = ["commande", "je prends", "je veux acheter", "confirme", "reserve", "je valide", "je le prends", "je la prends", "ok je prends"];
