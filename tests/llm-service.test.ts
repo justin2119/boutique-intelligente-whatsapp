@@ -401,7 +401,7 @@ async function main(): Promise<void> {
   });
 
   await check("faits : nombre ajouté (remise) rejeté", () => {
-    assert.ok(!preservesFacts("2 jours", "2 jours et 1 remise") === false, "ajout de chiffre doit échouer");
+    assert.ok(!preservesFacts("2 jours", "2 jours et 1 remise"), "ajout de chiffre doit échouer");
   });
 
   console.log(`\n${passed} réussi(s), ${failed} échec(s)`);
