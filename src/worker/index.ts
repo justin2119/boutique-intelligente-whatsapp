@@ -84,13 +84,11 @@ const MANAGER_COMMAND = /^(VALIDER|REFUSER)\s+(CMD-[A-Z0-9]+)$/i;
 /** Durée de vie du contexte de conversation (le client revient souvent dans les 48 h). */
 export const CONTEXT_TTL_SECONDS = 48 * 60 * 60;
 
+/** Réponses aux messages non textuels : une seule phrase, sans salutation répétée. */
 const NON_TEXT_REPLIES: Record<NonTextMediaType, string> = {
-  audio:
-    "Bonjour ! J'ai bien reçu votre message vocal, mais pour l'instant je ne peux lire que les messages texte. Écrivez-moi votre commande ou question ici s'il vous plaît ! 🙏",
-  image:
-    "Bonjour ! J'ai bien reçu votre image, mais pour l'instant je ne peux lire que les messages texte. Écrivez-moi votre commande ou question ici s'il vous plaît ! 🙏",
-  document:
-    "Bonjour ! J'ai bien reçu votre document, mais pour l'instant je ne peux lire que les messages texte. Écrivez-moi votre commande ou question ici s'il vous plaît ! 🙏",
+  audio: "Nous ne pouvons traiter que les messages écrits. Merci de nous indiquer votre demande par écrit.",
+  image: "Nous ne pouvons traiter que les messages écrits. Merci de nous indiquer votre demande par écrit.",
+  document: "Nous ne pouvons traiter que les messages écrits. Merci de nous indiquer votre demande par écrit.",
 };
 
 interface HistoryEntry {
@@ -330,7 +328,7 @@ export async function processWebhook(payload: unknown, deps: WorkerDeps): Promis
   return outcome;
 }
 
-/** Message audio, image ou document : réponse polie demandant un message texte. */
+/** Message audio, image ou document : réponse sobre demandant un message écrit. */
 async function handleNonTextMessage(media: IncomingNonTextMessage, deps: WorkerDeps): Promise<WebhookOutcome> {
   if (isForeignInstance(media.idInstance, deps.config.expectedIdInstance)) {
     return { status: "ignored", reason: "Instance Green API inconnue." };
