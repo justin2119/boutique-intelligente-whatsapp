@@ -7,6 +7,7 @@ import { FormatterAgent } from "../src/agents/formatter-agent";
 import { HitlValidator } from "../src/agents/hitl";
 import { LogisticsAgent, EXPRESS_FEE_MULTIPLIER } from "../src/agents/logistics-agent";
 import { ManagerAgent, classifyIntent, parseQuantity } from "../src/agents/manager-agent";
+import { parseSlot } from "../src/agents/intent-terms";
 import { SellerAgent } from "../src/agents/seller-agent";
 
 // Déclaration locale : tsconfig.json n'inclut que @cloudflare/workers-types (pas de @types/node).
@@ -100,6 +101,20 @@ async function main(): Promise<void> {
     assert.equal(parseQuantity("je cherche du super wax vert"), 1);
   });
 
+  // Créneau de livraison
+  await check("créneau : « Créneau vers 15h » est reconnu", () => {
+    assert.equal(parseSlot("Créneau vers 15h") !== null, true);
+  });
+  await check("créneau : « 7h00-12h00 » est reconnu", () => {
+    assert.equal(parseSlot("7h00-12h00") !== null, true);
+  });
+  await check("créneau : « demain matin » est reconnu", () => {
+    assert.equal(parseSlot("demain matin") !== null, true);
+  });
+  await check("créneau : un message sans créneau n'en contient pas", () => {
+    assert.equal(parseSlot("Combien ça coûte pour livrer à Dantokpa ?"), null);
+  });
+
   // Vendeur : recommandations et alternatives
   await check("vendeur : SW-003 en rupture pour la recherche « super wax vert »", () => {
     const result = new SellerAgent(catalog).recommend("super wax vert", 2);
@@ -180,6 +195,29 @@ async function main(): Promise<void> {
     assert.equal(resolved.validation.status, "CONFIRMED");
     assert.equal(resolved.validation.decidedBy, "manager");
     assert.match(resolved.customerMessage, /confirmée/);
+  });
+  await check("scénario : créneau donné après le devis crée la commande en validation (pas de répétition)", async () => {
+    const manager = buildManager();
+    const quote = await manager.handle("Bonjour, je cherche un ThinkPad T14 pour Sokodé en express. Combien ça coûte ?");
+    assert.equal(quote.aggregated.validation, null, "le devis ne crée pas de commande");
+    const reply = await manager.handle("Créneau vers 15h", quote.context);
+    assert.equal(reply.aggregated.intent, "order_request");
+    const validation = reply.aggregated.validation;
+    if (validation === null) {
+      throw new Error("validation attendue après le créneau");
+    }
+    assert.equal(validation.status, "PENDING_HUMAN_VALIDATION");
+    assert.equal(validation.draft.slot, "Créneau vers 15h");
+    assert.match(reply.customerMessage, /Créneau souhaité : Créneau vers 15h/);
+    assert.match(reply.customerMessage, /en cours de validation/);
+    assert.equal(reply.context?.orderPlaced, true);
+  });
+  await check("scénario : un second créneau ne recrée pas la commande", async () => {
+    const manager = buildManager();
+    const quote = await manager.handle("Je cherche un ThinkPad T14 pour Sokodé en express");
+    const first = await manager.handle("Créneau vers 15h", quote.context);
+    const second = await manager.handle("7h00-12h00", first.context);
+    assert.equal(second.aggregated.validation, null, "pas de nouvelle commande");
   });
   await check("HITL : PENDING_HUMAN_VALIDATION vers REJECTED", () => {
     const hitl = new HitlValidator(clock);
