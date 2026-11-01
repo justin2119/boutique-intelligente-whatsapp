@@ -24,11 +24,21 @@ export class SellerAgent {
     if (best === undefined) {
       return { kind: "not_found", query };
     }
-    const product = best.product;
-    if (product.stock >= quantity) {
-      return { kind: "available", product, quantity, subtotalXof: product.priceXof * quantity };
+    return this.resultFor(best.product, quantity);
+  }
+
+  /** Reprend un produit précis (suivi de conversation) et renvoie son statut de stock pour la quantité demandée. */
+  byId(id: string, quantity: number): SellerResult {
+    const product = this.getById(id);
+    if (product === undefined) {
+      return { kind: "not_found", query: id };
     }
-    return { kind: "out_of_stock", product, quantity, alternatives: this.findAlternatives(product, quantity) };
+    return this.resultFor(product, quantity);
+  }
+
+  /** Produit du catalogue par identifiant, ou undefined. */
+  getById(id: string): Product | undefined {
+    return this.products.find((product) => product.id === id);
   }
 
   /** Liste les ordinateurs en stock, triés par prix croissant, sous un budget éventuel. */
@@ -37,6 +47,13 @@ export class SellerAgent {
       .filter((p) => p.category === "ordinateur" && p.stock > 0)
       .filter((p) => budget === null || p.priceXof <= budget)
       .sort((a, b) => a.priceXof - b.priceXof);
+  }
+
+  private resultFor(product: Product, quantity: number): SellerResult {
+    if (product.stock >= quantity) {
+      return { kind: "available", product, quantity, subtotalXof: product.priceXof * quantity };
+    }
+    return { kind: "out_of_stock", product, quantity, alternatives: this.findAlternatives(product, quantity) };
   }
 
   private findAlternatives(product: Product, quantity: number): Product[] {
@@ -66,7 +83,6 @@ function scoreProduct(product: Product, tokens: readonly string[], tech: boolean
     return 0;
   }
   if (!tech && product.category === "ordinateur" && !tokens.includes("ordinateur") && !tokens.includes("laptop")) {
-    // Une recherche de tissu ne doit pas remonter un ordinateur par hasard.
     return 0;
   }
   const parts = tech
