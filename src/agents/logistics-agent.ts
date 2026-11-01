@@ -8,7 +8,7 @@ import { normalizeText } from "./normalize";
  */
 export const EXPRESS_FEE_MULTIPLIER = 1.5;
 export const EXPRESS_ETA_REDUCTION_DAYS = 1;
-/** Plancher du délai express : 0 jour, pour que la livraison du jour même (ex. Dantokpa) reste le jour même. */
+/** Plancher du délai express : 0 jour, pour que la livraison du jour même (ex. Dantokpa, Lomé-Centre) reste le jour même. */
 export const MIN_EXPRESS_ETA_DAYS = 0;
 
 /** Calcule le délai express : jamais plus lent que le standard, et 0 jour reste 0 jour. */
@@ -16,7 +16,7 @@ export function expressEtaDays(standardEtaDays: number): number {
   return Math.min(standardEtaDays, Math.max(MIN_EXPRESS_ETA_DAYS, standardEtaDays - EXPRESS_ETA_REDUCTION_DAYS));
 }
 
-/** Agent Logisticien : frais, délai et options de livraison (Cotonou, Calavi, Porto-Novo, Lomé). */
+/** Agent Logisticien : frais, délai et options de livraison (Cotonou, Calavi, Porto-Novo, Lomé et régions du Togo). */
 export class LogisticsAgent {
   private readonly zones: readonly DeliveryZone[];
 
@@ -54,6 +54,12 @@ export class LogisticsAgent {
       etaDays: express ? expressEtaDays(zone.etaDays) : zone.etaDays,
     };
   }
+
+  /** Liste les zones d'une ville (ex. toutes les zones de Lomé) pour proposer un choix au client. */
+  zonesInCity(city: string): DeliveryZone[] {
+    const target = normalizeText(city);
+    return this.zones.filter((zone) => normalizeText(zone.city) === target);
+  }
 }
 
 /** Repère le lieu de livraison mentionné dans un message (le plus long terme trouvé). */
@@ -71,6 +77,19 @@ export function detectZoneTerm(message: string, zones: readonly DeliveryZone[]):
     }
   }
   return best;
+}
+
+/** Message quand le client parle de livraison sans lieu précis : on demande le quartier ou la ville avec enthousiasme. */
+export function askForZoneMessage(zones: readonly DeliveryZone[]): string {
+  const lome = zones.filter((zone) => normalizeText(zone.city) === "lome").map((zone) => zone.zone);
+  const cotonou = zones.filter((zone) => normalizeText(zone.city) === "cotonou").map((zone) => zone.zone);
+  return [
+    "Avec plaisir, on livre partout ! 🚚",
+    `📍 *À Lomé* : ${lome.join(", ")} (à partir de 1 000 FCFA, souvent le jour même ou J+1).`,
+    `📍 *Dans les régions* : Tsévié, Kpalimé, Vogan, Atakpamé, Sokodé, Kara, Dapaong (2 500 à 4 500 FCFA).`,
+    `📍 *Au Bénin* : ${cotonou.join(", ")} et autres villes (sur demande).`,
+    "Dans quel quartier ou quelle ville êtes-vous ? Je vous donne le tarif exact tout de suite 😊",
+  ].join("\n");
 }
 
 function labelsOf(zone: DeliveryZone): string[] {
