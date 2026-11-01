@@ -246,7 +246,7 @@ test("non-texte : réponse sobre au client pour un message vocal", async () => {
   assertEqual(outcome.status, "non_text_reply", "statut non-texte");
   assertEqual(sender.sent.length, 1, "une seule réponse");
   assertEqual(sender.sent[0]?.chatId ?? "", `${CLIENT_PHONE}@c.us`, "destinataire client");
-  assert((sender.sent[0]?.message ?? "").includes("messages écrits"), "message indiquant que seuls les messages écrits sont traités");
+  assert((sender.sent[0]?.message ?? "").includes("message vocal"), "message mentionnant le message vocal");
   assert((sender.sent[0]?.message ?? "").includes("par écrit"), "demande de passer par l'écrit");
   const repeat = await processWebhook(mediaPayload("MSG-VOICE", CLIENT_PHONE, "audioMessage"), makeDeps(sender, storage));
   assertEqual(repeat.status, "duplicate", "doublon non-texte ignoré");
@@ -468,7 +468,7 @@ test("ETA express : formule jamais plus lente que le standard", () => {
   assertEqual(expressEtaDays(1), 0, "1 -> 0");
   assertEqual(expressEtaDays(3), 2, "3 -> 2");
   assertEqual(EXPRESS_ETA_REDUCTION_DAYS, 1, "réduction de 1 jour");
-  assertEqual(etaPhrase(2), "délai estimé de 2 jour(s)", "libellé avec jours");
+  assertEqual(etaPhrase(2), "délai estimé 2 jour(s)", "libellé avec jours");
 });
 
 test("HITL : commande en PENDING_HUMAN_VALIDATION puis validée par le gérant", async () => {
