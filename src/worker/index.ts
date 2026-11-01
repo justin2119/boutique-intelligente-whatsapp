@@ -316,6 +316,7 @@ async function handleCustomerMessage(message: IncomingTextMessage, deps: WorkerD
     clock,
     ...(deps.llm !== undefined ? { llm: deps.llm } : {}),
   });
+  console.log(`[Worker] customer message : llm ${deps.llm !== undefined ? "active" : "absent"}`);
   const trace = await manager.handle(message.text, previous, history);
 
   let orderReference: string | null = null;
@@ -468,6 +469,7 @@ export function buildDeps(env: WorkerEnv, sender: OutboundSender, clock: () => D
   } else {
     throw new StorageConfigError();
   }
+  console.log(`[Worker] RODIUM_API_KEY present: ${Boolean(env.RODIUM_API_KEY && env.RODIUM_API_KEY.trim() !== "")}`);
   const llmConfig = readLlmConfig(env);
   const llm = llmConfig !== null ? createRodiumLlmService(llmConfig) : undefined;
   return {
