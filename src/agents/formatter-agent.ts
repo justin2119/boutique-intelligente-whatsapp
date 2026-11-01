@@ -4,12 +4,12 @@ import { SALES_POLICY, policyLines, type SalesPolicy } from "./sales-policy";
 
 /** Libellé du délai : « livraison le jour même » pour 0 jour, sinon « délai estimé N jour(s) ». */
 export function etaPhrase(etaDays: number): string {
-  return etaDays === 0 ? "livraison le jour même" : `délai estimé ${etaDays} jour(s)`;
+  return etaDays === 0 ? "livraison le jour même" : `délai estimé de ${etaDays} jour(s)`;
 }
 
 /**
- * Agent Commercial / Formateur WhatsApp : conseiller de JulieShop 🇹🇬.
- * Ton chaleureux et persuasif, questions consultatives, mise en forme WhatsApp (*gras*, puces, emojis utiles).
+ * Agent Commercial : conseiller professionnel de JulieShop.
+ * Ton formel et courtois (vouvoiement), questions consultatives, mise en forme WhatsApp sobre (*gras*, puces).
  */
 export class FormatterAgent {
   private readonly policy: SalesPolicy;
@@ -31,77 +31,78 @@ export class FormatterAgent {
     }
     if (sections.length === 0) {
       sections.push(
-        "Je serai ravi de vous conseiller 😊 Pour vous proposer le bon modèle, dites-moi : quel est votre besoin principal (bureautique, montage vidéo, développement, études, pagne pour une cérémonie) ?",
+        "Pour vous orienter vers le modèle le plus adapté, merci de bien vouloir préciser votre besoin principal : bureautique, développement, graphisme ou montage, études ou gaming. Indiquez également votre budget si vous le souhaitez.",
       );
     }
-    return [`Bonjour et bienvenue chez *${this.policy.storeName}* 🇹🇬 !`, ...sections, closing(aggregated)].join("\n\n");
+    return [`*Bienvenue chez ${this.policy.storeName}.*`, ...sections, closing(aggregated, this.policy.storeName)].join("\n\n");
   }
 }
 
-function closing(aggregated: AggregatedResponse): string {
+function closing(aggregated: AggregatedResponse, storeName: string): string {
   if (aggregated.validation !== null) {
-    return "Merci de votre confiance, c'est un plaisir de vous servir ! 🙏🏾";
+    return `Nous vous remercions de votre confiance.\n\nCordialement,\nL'équipe ${storeName}`;
   }
   if (aggregated.seller?.kind === "available" && aggregated.logistics === null) {
-    return "Dites-moi juste votre quartier ou votre ville à Lomé, et je vous calcule la livraison tout de suite 🚚";
+    return "Afin de calculer les frais de livraison, merci de nous indiquer votre quartier ou votre ville.";
   }
-  return "Je reste à votre disposition pour vous guider jusqu'à la commande 😊";
+  return `Nous restons à votre disposition pour vous accompagner.\n\nCordialement,\nL'équipe ${storeName}`;
 }
 
 function sellerSection(result: SellerResult): string {
   switch (result.kind) {
     case "available": {
-      const unit = result.product.sellUnit === "pagne" ? "pagne(s)" : "pièce(s)";
+      const unit = result.product.sellUnit === "pagne" ? "unité(s)" : "unité(s)";
       const pitch = pitchFor(result.product.category, result.product.tags);
       return [
-        `✅ Excellent choix : *${result.product.name}* (${result.product.id}) est disponible pour ${result.quantity} ${unit}.`,
+        `*Disponibilité confirmée*`,
+        `• Modèle : ${result.product.name} (réf. ${result.product.id})`,
+        `• Quantité : ${result.quantity} ${unit}`,
+        `• Prix unitaire : ${formatFcfa(result.product.priceXof)}`,
+        `• Sous-total : ${formatFcfa(result.subtotalXof)}`,
         pitch,
-        `💰 Prix : *${formatFcfa(result.subtotalXof)}* (${formatFcfa(result.product.priceXof)} l'unité).`,
       ]
         .filter((line) => line.length > 0)
         .join("\n");
     }
     case "out_of_stock": {
       const lines = [
-        `😔 Désolé, *${result.product.name}* (${result.product.id}) n'est plus disponible en ${result.quantity} unité(s).`,
+        `*Disponibilité*`,
+        `Nous regrettons que *${result.product.name}* (réf. ${result.product.id}) ne soit pas disponible en ${result.quantity} unité(s) à ce jour.`,
       ];
       if (result.alternatives.length > 0) {
-        lines.push("✨ Mais je vous recommande aussi :");
+        lines.push("Nous pouvons vous proposer les alternatives suivantes :");
         for (const alt of result.alternatives) {
-          lines.push(`• *${alt.name}* (${alt.id}) : ${formatFcfa(alt.priceXof)}, ${alt.stock} disponible(s)`);
+          lines.push(`• *${alt.name}* (réf. ${alt.id}) : ${formatFcfa(alt.priceXof)}, ${alt.stock} unité(s) disponible(s)`);
         }
-        lines.push("Lequel vous attire le plus ? Je peux aussi vous comparer les deux.");
+        lines.push("Souhaitez-vous que nous comparions ces modèles selon vos besoins ?");
       } else {
-        lines.push("Dites-moi votre budget ou votre usage, je vous trouve une autre option qui vous plaira.");
+        lines.push("Indiquez-nous votre budget et votre usage, afin que nous puissions identifier une option adaptée.");
       }
       return lines.join("\n");
     }
     case "not_found":
-      return "🤔 Je ne suis pas sûr de bien comprendre. Pour bien vous conseiller, dites-moi l'usage principal (bureautique, montage vidéo, développement, études, cérémonie), votre budget et, si vous les connaissez, la marque ou la taille d'écran souhaitées.";
+      return "Afin de vous recommander le modèle le plus adapté, pourriez-vous préciser votre usage principal (bureautique, développement, graphisme ou montage, études, gaming), votre budget et, si vous le souhaitez, la marque ou la taille d'écran privilégiée ?";
   }
 }
 
-/** Argument de vente court selon la catégorie : ce qui convainc vraiment le client. */
+/** Argument commercial sobre selon la catégorie. */
 function pitchFor(category: string, tags: readonly string[]): string {
   if (category === "ordinateur") {
     if (tags.includes("macbook") || tags.includes("apple")) {
-      return "🚀 Puce Apple : autonomie exceptionnelle et fluidité au quotidien, idéal pour le travail, les études et la création.";
+      return "*Atouts :* puce Apple, autonomie prolongée et fluidité pour le travail, les études et la création.";
     }
     if (tags.includes("thinkpad") || tags.includes("ultrabook")) {
-      return "🛡️ Robustesse et clavier de référence : parfait pour un usage intensif et les longues journées de travail.";
+      return "*Atouts :* robustesse, clavier de référence et mobilité, adaptés à un usage professionnel intensif.";
     }
     if (tags.includes("gaming")) {
-      return "🎮 Carte graphique dédiée : jeux, montage et rendu 3D, vous êtes prêt pour la performance.";
+      return "*Atouts :* carte graphique dédiée, adaptée au gaming, au montage vidéo et au rendu 3D.";
     }
     if (tags.includes("oled")) {
-      return "🖥️ Écran OLED : couleurs éclatantes, parfait pour le design et le visionnage.";
+      return "*Atouts :* écran OLED offrant une restitution des couleurs précise, adapté au graphisme et au visionnage.";
     }
-    return "💻 Très bon rapport qualité-prix pour la bureautique, les études et la navigation.";
+    return "*Atouts :* très bon rapport qualité-prix pour la bureautique, les études et la navigation.";
   }
-  if (category === "vlisco" || category === "kente") {
-    return "👑 Une pièce d'exception, qui fera sensation lors de votre événement.";
-  }
-  return "🌟 Un tissu de qualité, des motifs qui font le style.";
+  return "*Atouts :* produit de qualité, sélectionné par notre équipe.";
 }
 
 function logisticsSection(result: LogisticsResult): string {
@@ -109,19 +110,22 @@ function logisticsSection(result: LogisticsResult): string {
     case "quoted": {
       const label = result.option === "express" ? "express" : "standard";
       const lines = [
-        `🚚 Super, on livre à *${result.zone.zone}* ! Livraison ${label} : *${formatFcfa(result.feeXof)}*, ${etaPhrase(result.etaDays)}.`,
+        `*Livraison*`,
+        `• Zone : ${result.zone.zone}`,
+        `• Option : ${label}`,
+        `• Frais : ${formatFcfa(result.feeXof)}`,
+        `• Délai : ${etaPhrase(result.etaDays)}`,
       ];
       if (result.option === "standard") {
-        lines.push("⚡ Vous voulez être livré plus vite ? Je peux vous proposer l'option express.");
+        lines.push("Une livraison express est également disponible si vous souhaitez être livré plus rapidement.");
       }
-      lines.push("📅 Quel jour et quelle plage horaire vous arrangent le mieux ?");
-      lines.push("🏠 Pouvez-vous me donner l'adresse précise (repère, rue ou point de rencontre) ?");
+      lines.push("Merci de nous indiquer le créneau souhaité ainsi que l'adresse précise (repère, rue ou point de rencontre).");
       return lines.join("\n");
     }
     case "ambiguous":
-      return `📍 Pour vous donner le tarif exact, précisez le quartier parmi : ${result.candidates.join(", ")} 😊`;
+      return `*Livraison*\nAfin de vous communiquer le tarif exact, merci de préciser votre quartier parmi les zones suivantes : ${result.candidates.join(", ")}.`;
     case "unknown_zone":
-      return `📍 Je n'ai pas encore de tarif pour « ${result.query} ». Dites-moi la ville ou le quartier : nous livrons à Lomé (1 000 FCFA et plus), dans les régions du Togo, et à Cotonou, Calavi, Porto-Novo.`;
+      return `*Livraison*\nNous ne disposons pas encore de tarif pour « ${result.query} ». Nous livrons à Lomé, dans les principales villes du Togo, ainsi qu'à Cotonou, Calavi et Porto-Novo. Merci de nous préciser la ville ou le quartier.`;
   }
 }
 
@@ -130,17 +134,17 @@ function orderSection(validation: ValidationRecord, reassurance: string[]): stri
   const lines = draft.lines.map((line) => `• ${line.name} x${line.quantity} : ${formatFcfa(line.lineTotalXof)}`);
   const status =
     validation.status === "PENDING_HUMAN_VALIDATION"
-      ? "⏳ Votre commande est en cours de validation par notre équipe. Nous vous confirmons très vite !"
+      ? "Votre commande est en cours de validation par notre équipe. Nous vous confirmerons sa prise en charge dans les meilleurs délais."
       : validation.status === "CONFIRMED"
-        ? "🎉 Votre commande est confirmée ! Merci pour votre achat, vous allez adorer."
-        : "⚠️ Nous ne pouvons pas valider cette commande pour le moment. Notre équipe revient vers vous rapidement.";
+        ? "Votre commande est confirmée. Nous vous remercions de votre achat."
+        : "Nous ne sommes pas en mesure de valider cette commande pour le moment. Notre équipe reviendra vers vous rapidement.";
   return [
-    `🧾 *Récapitulatif ${draft.reference}*`,
+    `*Récapitulatif de commande ${draft.reference}*`,
     ...lines,
-    `Articles : ${formatFcfa(draft.subtotalXof)}`,
-    `Livraison : ${formatFcfa(draft.deliveryFeeXof)}`,
+    `• Sous-total articles : ${formatFcfa(draft.subtotalXof)}`,
+    `• Frais de livraison : ${formatFcfa(draft.deliveryFeeXof)}`,
     `*Total : ${formatFcfa(draft.totalXof)}*`,
-    `📦 Livraison à ${draft.zoneLabel}, ${etaPhrase(draft.etaDays)}.`,
+    `• Livraison : ${draft.zoneLabel}, ${etaPhrase(draft.etaDays)}`,
     ...reassurance,
     status,
   ].join("\n");
