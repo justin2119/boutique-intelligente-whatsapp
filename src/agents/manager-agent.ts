@@ -85,7 +85,8 @@ export function stripSpecs(text: string): string {
 /**
  * Agent Manager / Orchestrateur : analyse l'intention, délègue aux spécialistes,
  * agrège les résultats et met toute commande en validation humaine.
- * Un seul message est produit par tour. Le contexte (produit, zone, option) est repris pour les suivis.
+ * Un seul message est produit par tour. Si le message ne contient aucun nouveau terme produit,
+ * le produit en cours de conversation est repris (au lieu d'un message générique).
  */
 export class ManagerAgent {
   private readonly deps: ManagerDeps;
@@ -108,19 +109,24 @@ export class ManagerAgent {
       `Manager : intention « ${intent} », quantité ${quantity}, budget ${budget ?? "non précisé"}, option de livraison ${option}.`,
     );
 
-    // Suivi : le client ne redit pas le produit, on reprend celui de la conversation.
-    const followUp = intent === "delivery_inquiry" && context.lastProductId !== undefined && context.lastProductId !== null;
-    const sellerResult = followUp
+    const hasContextProduct = context.lastProductId !== undefined && context.lastProductId !== null;
+    // Produit nouvellement cité dans le message.
+    const freshResult = seller.recommend(message, quantity);
+    // Sans nouveau produit cité, on reprend celui de la conversation (question de suivi, livraison, prix, usage).
+    const reuseContext = hasContextProduct && freshResult.kind === "not_found" && intent !== "order_request";
+    const sellerResult: SellerResult = reuseContext
       ? seller.byId(context.lastProductId as string, quantity)
-      : seller.recommend(message, quantity);
+      : freshResult;
     delegations.push({
       from: "manager",
       to: "seller",
-      task: `Rechercher le produit et vérifier le stock (${quantity} unité(s))`,
+      task: reuseContext
+        ? `Reprendre le produit de la conversation (${quantity} unité(s))`
+        : `Rechercher le produit et vérifier le stock (${quantity} unité(s))`,
       output: describeSeller(sellerResult),
     });
 
-    const zoneTerm = detectZoneTerm(message, catalog.zones) ?? (followUp ? context.lastZoneTerm ?? null : null);
+    const zoneTerm = detectZoneTerm(message, catalog.zones) ?? (hasContextProduct ? context.lastZoneTerm ?? null : null);
     let logisticsResult: LogisticsResult | null = null;
     if (zoneTerm !== null) {
       logisticsResult = logistics.quote(zoneTerm, option);
@@ -152,8 +158,8 @@ export class ManagerAgent {
       }
     }
 
-    // Livraison demandée sans lieu précis : une seule question, formulée par le manager.
-    const askZone = intent === "delivery_inquiry" && zoneTerm === null;
+    // Livraison demandée sans lieu précis : une seule question naturelle, sans liste.
+    const askZone = intent === "delivery_inquiry" && zoneTerm === null && sellerResult.kind === "not_found";
     const aggregated: AggregatedResponse = { intent, seller: sellerResult, logistics: logisticsResult, validation, draft };
     const customerMessage = askZone ? askForZoneMessage(catalog.zones) : formatter.compose(aggregated);
     delegations.push({
