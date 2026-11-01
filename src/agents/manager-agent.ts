@@ -42,6 +42,12 @@ const PRODUCT_WORDS: readonly string[] = [
 /** Termes qui signalent une demande de produit à partir du mot entier (pour « hp », « pc », « core »…). */
 const PRODUCT_WORD_BOUNDARY = /\b(pc|pcs|ordinateurs?|portables?|laptops?|macbooks?|mac|lenovo|thinkpad|dell|hp|asus|acer|machines?|core|intel|ryzen|gaming|bureau|tactile|ssd|ram|go|to|ghz|pouces?)\b/;
 
+/**
+ * Contenu à ne jamais reformuler : références de commande, codes de validation et mots-clés de commande gérant.
+ * Un message qui en contient un reste exactement tel que produit par les règles.
+ */
+const PROTECTED_CONTENT = /CMD-|VALIDER|REFUSER/i;
+
 /** Classe l'intention du message (règles déterministes, reproductibles hors ligne). */
 export function classifyIntent(message: string): Intent {
   const text = normalizeText(message);
@@ -184,7 +190,7 @@ export class ManagerAgent {
     const askZone = intent === "delivery_inquiry" && zoneTerm === null && sellerResult.kind === "not_found";
     const aggregated: AggregatedResponse = { intent, seller: sellerResult, logistics: logisticsResult, validation, draft };
     const deterministicMessage = askZone ? askForZoneMessage(catalog.zones) : formatter.compose(aggregated);
-    const customerMessage = await this.applyLlmFallback({
+    const fallbackMessage = await this.applyLlmFallback({
       message,
       intent,
       sellerResult,
@@ -193,6 +199,11 @@ export class ManagerAgent {
       deterministicMessage,
       history,
     });
+    // La reformulation ne s'applique qu'à une réponse non reprise par le repli conseil.
+    const customerMessage =
+      fallbackMessage === deterministicMessage
+        ? await this.applyRephrase({ message, intent, validation, deterministicMessage })
+        : fallbackMessage;
     delegations.push({
       from: "manager",
       to: "formatter",
@@ -251,6 +262,34 @@ export class ManagerAgent {
     try {
       const advice = await llm.advise(input.message, input.history, catalog.products);
       return advice !== null && advice.trim() !== "" ? advice.trim() : input.deterministicMessage;
+    } catch {
+      return input.deterministicMessage;
+    }
+  }
+
+  /**
+   * Reformulation humaine d'une réponse déterministe (catalogue, stock, livraison).
+   * Jamais appliquée aux commandes, aux validations, ni à un message contenant une référence
+   * ou un mot-clé de commande gérant. Sans LLM, ou en cas d'erreur, le message reste inchangé.
+   */
+  private async applyRephrase(input: {
+    readonly message: string;
+    readonly intent: Intent;
+    readonly validation: ValidationRecord | null;
+    readonly deterministicMessage: string;
+  }): Promise<string> {
+    const { llm } = this.deps;
+    if (
+      llm === undefined ||
+      input.validation !== null ||
+      input.intent === "order_request" ||
+      PROTECTED_CONTENT.test(input.deterministicMessage)
+    ) {
+      return input.deterministicMessage;
+    }
+    try {
+      const rephrased = await llm.rephrase(input.deterministicMessage, { customerMessage: input.message });
+      return rephrased.trim() !== "" ? rephrased.trim() : input.deterministicMessage;
     } catch {
       return input.deterministicMessage;
     }
