@@ -1,13 +1,23 @@
 /**
  * Service LLM hybride (RodiumAI, API compatible OpenAI).
- * - extraction structurée : temperature 0, réponse JSON uniquement.
- * - dialogue consultatif : temperature 0.2, réponse courte en français.
- * Ce service n'est appelé qu'en repli, après les règles déterministes du Manager.
- * Sans clé API, le service n'est pas créé et le comportement déterministe reste inchangé.
+ * Architecture : règles déterministes d'abord ; le LLM n'est appelé qu'en repli (intention « unknown »).
+ * - extract() : extraction structurée, température 0, max_tokens 150, réponse JSON.
+ * - advise()  : conseil consultatif, température 0.2, max_tokens 300, catalogue compacté.
+ * Sans RODIUM_API_KEY, aucun service n'est créé : le comportement reste strictement déterministe.
  */
+import type { Intent, Product } from "../types";
 
 export const RODIUM_DEFAULT_BASE_URL = "https://api.rodiumai.io/v1";
 export const RODIUM_DEFAULT_MODEL = "openai/gpt-6-luna";
+
+export const EXTRACTION_TEMPERATURE = 0;
+export const DIALOGUE_TEMPERATURE = 0.2;
+export const EXTRACTION_MAX_TOKENS = 150;
+export const ADVICE_MAX_TOKENS = 300;
+/** Nombre maximal de produits injectés dans le prompt de conseil. */
+export const ADVICE_MAX_PRODUCTS = 8;
+/** Nombre maximal de messages d'historique injectés (les plus récents). */
+export const ADVICE_MAX_HISTORY = 4;
 
 export interface LlmServiceConfig {
   readonly apiKey: string;
@@ -23,18 +33,21 @@ export interface LlmChatMessage {
 }
 
 export interface RodiumLlmService {
-  /** Extrait des champs structurés (JSON) du message client. Température 0. */
   extract(message: string, allowedFields: readonly string[]): Promise<Record<string, unknown> | null>;
-  /** Répond en dialogue consultatif, à partir du message et de l'historique. Température 0.2. */
-  advise(message: string, history: readonly LlmChatMessage[], systemPrompt: string): Promise<string | null>;
+  advise(message: string, history: readonly LlmChatMessage[], catalog: readonly Product[]): Promise<string | null>;
 }
 
 interface ChatCompletionResponse {
   readonly choices?: readonly { readonly message?: { readonly content?: string | null } }[];
 }
 
-export const EXTRACTION_TEMPERATURE = 0;
-export const DIALOGUE_TEMPERATURE = 0.2;
+/**
+ * Repli LLM : ne s'active que si les règles déterministes n'ont pas reconnu l'intention.
+ * Les intentions reconnues (produit, livraison, commande) ne consomment aucun token.
+ */
+export function shouldUseLlmFallback(intent: Intent): boolean {
+  return intent === "unknown";
+}
 
 /** Lit la configuration depuis l'environnement. Renvoie null si aucune clé n'est définie. */
 export function readLlmConfig(env: {
@@ -42,14 +55,29 @@ export function readLlmConfig(env: {
   readonly RODIUM_BASE_URL?: string;
   readonly RODIUM_MODEL?: string;
 }): LlmServiceConfig | null {
-  if (env.RODIUM_API_KEY === undefined || env.RODIUM_API_KEY.trim() === "") {
+  const key = env.RODIUM_API_KEY?.trim() ?? "";
+  if (key === "") {
     return null;
   }
+  const baseUrl = env.RODIUM_BASE_URL?.trim() ?? "";
+  const model = env.RODIUM_MODEL?.trim() ?? "";
   return {
-    apiKey: env.RODIUM_API_KEY.trim(),
-    baseUrl: env.RODIUM_BASE_URL && env.RODIUM_BASE_URL.trim() !== "" ? env.RODIUM_BASE_URL.trim() : RODIUM_DEFAULT_BASE_URL,
-    model: env.RODIUM_MODEL && env.RODIUM_MODEL.trim() !== "" ? env.RODIUM_MODEL.trim() : RODIUM_DEFAULT_MODEL,
+    apiKey: key,
+    baseUrl: baseUrl === "" ? RODIUM_DEFAULT_BASE_URL : baseUrl,
+    model: model === "" ? RODIUM_DEFAULT_MODEL : model,
   };
+}
+
+/**
+ * Catalogue compacté : une ligne par produit (id, nom, prix, stock, catégorie).
+ * Seuls les produits en stock sont proposés au conseil, pour limiter les tokens et éviter les promesses.
+ */
+export function compactCatalog(products: readonly Product[]): string {
+  return products
+    .filter((product) => product.stock > 0)
+    .slice(0, ADVICE_MAX_PRODUCTS)
+    .map((p) => `${p.id}|${p.name}|${p.priceXof} FCFA|stock ${p.stock}|${p.category}`)
+    .join("\n");
 }
 
 /** Extrait le premier objet JSON d'un texte (tolère les blocs de code Markdown). */
@@ -70,20 +98,26 @@ export function parseJsonObject(text: string): Record<string, unknown> | null {
   }
 }
 
+const EXTRACT_SYSTEM = (fields: readonly string[]): string =>
+  `Extrais les champs du message. JSON seul, clés: ${fields.join(",")}. Absent = null. N'invente rien.`;
+
+const ADVICE_SYSTEM = (catalog: string): string =>
+  `Vendeur WhatsApp pagnes, marché Dantokpa. Français, 3 phrases max, pas de markdown. Ne cite que ces produits (id|nom|prix|stock|catégorie), jamais de prix ou stock inventé. Oriente vers une demande précise.\nCatalogue:\n${catalog}`;
+
 export function createRodiumLlmService(config: LlmServiceConfig): RodiumLlmService {
   const baseUrl = (config.baseUrl ?? RODIUM_DEFAULT_BASE_URL).replace(/\/$/, "");
   const model = config.model ?? RODIUM_DEFAULT_MODEL;
   const fetchImpl = config.fetchImpl ?? fetch;
   const timeoutMs = config.timeoutMs ?? 8000;
 
-  async function chat(messages: readonly LlmChatMessage[], temperature: number): Promise<string | null> {
+  async function chat(messages: readonly LlmChatMessage[], temperature: number, maxTokens: number): Promise<string | null> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetchImpl(`${baseUrl}/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${config.apiKey}` },
-        body: JSON.stringify({ model, messages, temperature }),
+        body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens }),
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -101,22 +135,21 @@ export function createRodiumLlmService(config: LlmServiceConfig): RodiumLlmServi
     async extract(message, allowedFields) {
       const content = await chat(
         [
-          {
-            role: "system",
-            content: `Extrais les champs demandés du message client. Réponds uniquement par un objet JSON valide avec ces clés : ${allowedFields.join(", ")}. Mets null pour toute information absente. N'invente rien.`,
-          },
+          { role: "system", content: EXTRACT_SYSTEM(allowedFields) },
           { role: "user", content: message },
         ],
         EXTRACTION_TEMPERATURE,
+        EXTRACTION_MAX_TOKENS,
       );
       return content === null ? null : parseJsonObject(content);
     },
-    async advise(message, history, systemPrompt) {
-      const content = await chat(
-        [{ role: "system", content: systemPrompt }, ...history, { role: "user", content: message }],
+    async advise(message, history, catalog) {
+      const recent = history.slice(-ADVICE_MAX_HISTORY);
+      return chat(
+        [{ role: "system", content: ADVICE_SYSTEM(compactCatalog(catalog)) }, ...recent, { role: "user", content: message }],
         DIALOGUE_TEMPERATURE,
+        ADVICE_MAX_TOKENS,
       );
-      return content;
     },
   };
 }
