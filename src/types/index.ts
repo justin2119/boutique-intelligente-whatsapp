@@ -9,6 +9,7 @@ export const PRODUCT_CATEGORIES = [
   "woodin",
   "kente",
   "accessoire",
+  "ordinateur",
 ] as const;
 export type ProductCategory = (typeof PRODUCT_CATEGORIES)[number];
 
