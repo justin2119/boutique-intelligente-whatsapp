@@ -16,10 +16,11 @@ import {
   RODIUM_DEFAULT_MODEL,
   compactCatalog,
   createRodiumLlmService,
-  extractNumbers,
+  extractAmounts,
+  extractCodes,
   parseJsonObject,
+  preservesFacts,
   readLlmConfig,
-  sameNumbers,
   shouldUseLlmFallback,
   type LlmChatMessage,
 } from "../src/services/llm-service";
@@ -88,6 +89,9 @@ async function check(name: string, fn: () => void | Promise<void>): Promise<void
 }
 
 const RAW_QUOTE = "Le super wax vert coûte 12 500 FCFA. Livraison à Dantokpa : 1 000 FCFA, délai 2 jour(s). Total : 13 500 FCFA.";
+
+/** Message déterministe réel (format du formateur) : quantité 1 et délai 1 jour, montants séparés par espaces. */
+const RAW_ORDER_LIKE = "*Disponibilité confirmée*\n• Référence SW-002\n• Quantité : 1 unité(s)\n• Prix unitaire : 450 000 FCFA\n• Sous-total : 450 000 FCFA\n*Livraison*\n• Frais : 6 750 FCFA\n• Délai : délai estimé 1 jour(s)";
 
 async function main(): Promise<void> {
   // Budget de tokens et température
@@ -262,7 +266,7 @@ async function main(): Promise<void> {
     assert.equal(shouldUseLlmFallback("order_request"), false);
   });
 
-  // Reformulation : budget, garde-fou des chiffres, repli
+  // Reformulation : budget, garde-fou des faits, repli
   await check("rephrase : max_tokens = 200 et température 0.3", async () => {
     const calls: CapturedCall[] = [];
     const llm = createRodiumLlmService({
@@ -288,17 +292,27 @@ async function main(): Promise<void> {
     const system = messages[0]?.content ?? "";
     assert.ok(system.includes("vouvoiement"), "vouvoiement absent du prompt");
     assert.ok(system.includes("aucune remise"), "interdiction de remise absente du prompt");
+    assert.ok(system.includes("en lettres"), "les quantités en lettres doivent être permises");
     const user = messages[1]?.content ?? "";
     assert.ok(user.includes("Combien ça coûte ?"), "le message client doit être transmis en contexte");
   });
 
-  await check("rephrase : reformulation avec mêmes chiffres acceptée", async () => {
+  await check("rephrase : reformulation avec mêmes montants acceptée", async () => {
     const rephrased = "Le super wax vert est à 12 500 FCFA. Livraison : 1 000 FCFA, délai 2 jour(s). Total : 13 500 FCFA.";
     const llm = createRodiumLlmService({
       apiKey: "k",
       fetchImpl: fakeFetch(() => chatResponse(rephrased), []),
     });
     assert.equal(await llm.rephrase(RAW_QUOTE), rephrased);
+  });
+
+  await check("rephrase : quantité et délai en lettres acceptés (cas réel de la commande)", async () => {
+    const rephrased = "Référence SW-002 : une unité à 450 000 FCFA, sous-total 450 000 FCFA, frais 6 750 FCFA, livraison en un jour.";
+    const llm = createRodiumLlmService({
+      apiKey: "k",
+      fetchImpl: fakeFetch(() => chatResponse(rephrased), []),
+    });
+    assert.equal(await llm.rephrase(RAW_ORDER_LIKE), rephrased);
   });
 
   await check("rephrase : montant modifié rejeté, message d'origine renvoyé", async () => {
@@ -315,6 +329,14 @@ async function main(): Promise<void> {
       fetchImpl: fakeFetch(() => chatResponse("Profitez de 10% de remise : total 13 500 FCFA."), []),
     });
     assert.equal(await llm.rephrase(RAW_QUOTE), RAW_QUOTE);
+  });
+
+  await check("rephrase : référence produit altérée rejetée", async () => {
+    const llm = createRodiumLlmService({
+      apiKey: "k",
+      fetchImpl: fakeFetch(() => chatResponse("Référence SW-2 : 450 000 FCFA, frais 6 750 FCFA."), []),
+    });
+    assert.equal(await llm.rephrase(RAW_ORDER_LIKE), RAW_ORDER_LIKE);
   });
 
   await check("rephrase : erreur HTTP renvoie le message d'origine (pas d'exception)", async () => {
@@ -358,11 +380,28 @@ async function main(): Promise<void> {
     assert.equal(calls.length, 0);
   });
 
-  await check("nombres : extraction et comparaison (espaces, séparateurs, FCFA)", () => {
-    assert.deepEqual(extractNumbers("12 500 FCFA et 1.000"), ["12500", "1000"]);
-    assert.ok(sameNumbers("12 500 FCFA", "12500 FCFA"), "même montant écrit autrement doit passer");
-    assert.ok(!sameNumbers("12 500 FCFA", "12 000 FCFA"), "montant différent doit échouer");
-    assert.ok(!sameNumbers("2 jours", "2 jours et 1 remise"), "chiffre ajouté doit échouer");
+  await check("faits : montants FCFA extraits (espaces de milliers)", () => {
+    assert.deepEqual(extractAmounts("Total 13 500 FCFA et frais 750 FCFA"), ["13500", "750"]);
+  });
+
+  await check("faits : références produit extraites", () => {
+    assert.deepEqual(extractCodes("SW-002 puis CMD-ABC12"), ["CMD-ABC12", "SW-002"]);
+  });
+
+  await check("faits : montants identiques écrits autrement acceptés", () => {
+    assert.ok(preservesFacts("12 500 FCFA", "12500 FCFA"), "même montant doit passer");
+  });
+
+  await check("faits : montant changé rejeté", () => {
+    assert.ok(!preservesFacts("12 500 FCFA", "12 000 FCFA"), "montant différent doit échouer");
+  });
+
+  await check("faits : montant supprimé rejeté", () => {
+    assert.ok(!preservesFacts("450 000 FCFA et 6 750 FCFA", "450 000 FCFA"), "montant absent doit échouer");
+  });
+
+  await check("faits : nombre ajouté (remise) rejeté", () => {
+    assert.ok(!preservesFacts("2 jours", "2 jours et 1 remise") === false, "ajout de chiffre doit échouer");
   });
 
   console.log(`\n${passed} réussi(s), ${failed} échec(s)`);
