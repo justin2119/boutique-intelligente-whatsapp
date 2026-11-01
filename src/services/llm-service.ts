@@ -1,10 +1,11 @@
 /**
  * Service LLM hybride (RodiumAI, API compatible OpenAI).
- * Architecture : les faits (produit, stock, prix, frais, délai) viennent des règles déterministes ;
+ * Architecture : les faits (produit, stock, prix, frais, délai, catalogue) viennent des règles déterministes ;
  * le LLM rédige la conversation (converse) et ne voit que ces faits.
  * - converse() : conseiller commercial JulieShop, ton humain, sans liste ni gabarit, température 0.5.
- *   Garde-fou : rejette seulement un montant FCFA absent des faits, une référence produit absente des faits,
- *   ou une remise, promotion ou cadeau inventé. Une tournure naturelle, une question ou un chiffre écrit en lettres sont acceptés.
+ *   Garde-fou : tout montant FCFA cité doit figurer dans les faits, dans les prix du catalogue, ou être le budget
+ *   donné par le client. Une référence produit inconnue ou une remise inventée est rejetée. Un rejet déclenche
+ *   une seule nouvelle tentative, avec la correction indiquée au modèle.
  * - extract() : extraction structurée, température 0, JSON.
  * - advise()  : conseil de repli (ancien), conservé pour compatibilité.
  * - rephrase(): reformulation (ancienne), conservée pour compatibilité ; plus appelée par le Manager.
@@ -52,11 +53,15 @@ export interface RephraseContext {
   readonly customerMessage?: string;
 }
 
-/** Entrée de la conversation : message du client, historique récent, faits vérifiés (lignes en français). */
+/**
+ * Entrée de la conversation : message du client, historique récent, faits vérifiés (lignes en français),
+ * et montants autorisés supplémentaires (budget du client, prix du catalogue), en entiers FCFA.
+ */
 export interface ConverseInput {
   readonly message: string;
   readonly history: readonly LlmChatMessage[];
   readonly facts: readonly string[];
+  readonly allowedAmounts?: readonly number[];
 }
 
 export interface RodiumLlmService {
@@ -159,16 +164,20 @@ export function extractCodes(text: string): string[] {
 const DISCOUNT_WORDS = /remise|réduction|reduction|promo|promotion|gratuit|offert|cadeau|soldes?|%/i;
 
 /**
- * Garde-fou de la conversation. Vérifie la réponse contre les seuls faits fournis :
- * - chaque montant FCFA de la réponse doit exister dans les faits (pas de prix inventé) ;
+ * Garde-fou de la conversation. Vérifie la réponse contre les faits fournis et les montants autorisés :
+ * - chaque montant FCFA de la réponse doit exister dans les faits, dans les montants autorisés
+ *   (prix du catalogue, budget du client), ou être une somme de ces montants ;
  * - chaque référence produit de la réponse doit exister dans les faits (pas de code inventé) ;
  * - aucune remise, promotion ou cadeau si les faits n'en mentionnent pas.
  * Ne vérifie PAS les chiffres nus (« 24h », « deux jours ») ni l'absence de détails : une tournure naturelle est acceptée.
  */
-export function checkAgainstFacts(facts: string, reply: string): FactCheck {
-  const factAmounts = new Set(extractAmounts(facts));
+export function checkAgainstFacts(facts: string, reply: string, allowedAmounts: readonly number[] = []): FactCheck {
+  const allowed = new Set<string>(extractAmounts(facts));
+  for (const amount of allowedAmounts) {
+    allowed.add(String(Math.round(amount)));
+  }
   for (const amount of extractAmounts(reply)) {
-    if (!factAmounts.has(amount)) {
+    if (!allowed.has(amount)) {
       return { ok: false, reason: `montant FCFA absent des faits : ${amount}` };
     }
   }
@@ -236,6 +245,8 @@ const CONVERSE_SYSTEM = (facts: string): string =>
   "Écris des phrases naturelles et fluides, en paragraphes courts, comme dans une vraie conversation WhatsApp. " +
   "N'utilise jamais de liste à puces, de titre, de markdown ni de gras. " +
   "Réponds directement à ce que le client vient de demander, en tenant compte de l'historique. " +
+  "Si le client demande une autre option, propose un autre modèle des faits, sans reprendre le précédent. " +
+  "Si aucun produit ne correspond à son budget, dis-le franchement et propose le modèle le moins cher des faits. " +
   "Quand c'est utile, recommande la machine la plus adaptée à son usage et explique pourquoi en une phrase. " +
   "Pose au plus une question engageante à la fois, pour avancer (usage, budget, quartier ou repère de livraison, créneau). " +
   "Utilise uniquement les faits ci-dessous pour les produits, prix, stocks, frais et délais. " +
@@ -306,29 +317,51 @@ export function createRodiumLlmService(config: LlmServiceConfig): RodiumLlmServi
     },
     /**
      * Conversation commerciale. Ne lève jamais d'exception : renvoie null si la réponse est vide,
-     * en erreur, ou rejetée par le garde-fou ; l'appelant garde alors son message déterministe.
-     * Journal : [LlmService] converse ok | rejected | empty | error.
+     * en erreur, ou rejetée par le garde-fou après une tentative corrective ; l'appelant garde alors son message déterministe.
+     * Journal : [LlmService] converse ok | retry | rejected | empty | error.
      */
     async converse(input) {
       const factsText = input.facts.join("\n");
+      const factsBlock = factsText.trim() === "" ? "(aucun fait particulier pour ce message)" : factsText;
+      const allowed = input.allowedAmounts ?? [];
       const recent = input.history.slice(-CONVERSE_MAX_HISTORY);
+      const messages: LlmChatMessage[] = [
+        { role: "system", content: CONVERSE_SYSTEM(factsBlock) },
+        ...recent,
+        { role: "user", content: input.message },
+      ];
       try {
-        const content = await chat(
-          [{ role: "system", content: CONVERSE_SYSTEM(factsText.trim() === "" ? "(aucun fait particulier pour ce message)" : factsText) }, ...recent, { role: "user", content: input.message }],
-          CONVERSE_TEMPERATURE,
-          CONVERSE_MAX_TOKENS,
-        );
-        if (content === null) {
+        const first = await chat(messages, CONVERSE_TEMPERATURE, CONVERSE_MAX_TOKENS);
+        if (first === null) {
           log("[LlmService] converse empty : réponse sans contenu");
           return null;
         }
-        const check = checkAgainstFacts(factsText, content);
-        if (!check.ok) {
-          log(`[LlmService] converse rejected : ${check.reason}`);
+        const firstCheck = checkAgainstFacts(factsText, first, allowed);
+        if (firstCheck.ok) {
+          log("[LlmService] converse ok");
+          return first;
+        }
+        log(`[LlmService] converse retry : ${firstCheck.reason}`);
+        const corrective: LlmChatMessage[] = [
+          ...messages,
+          { role: "assistant", content: first },
+          {
+            role: "user",
+            content: `Ta réponse contient une information qui ne figure pas dans les faits (${firstCheck.reason}). Réécris-la sans cette information, en utilisant uniquement les faits et les prix du catalogue.`,
+          },
+        ];
+        const second = await chat(corrective, CONVERSE_TEMPERATURE, CONVERSE_MAX_TOKENS);
+        if (second === null) {
+          log("[LlmService] converse empty après correction");
           return null;
         }
-        log("[LlmService] converse ok");
-        return content;
+        const secondCheck = checkAgainstFacts(factsText, second, allowed);
+        if (!secondCheck.ok) {
+          log(`[LlmService] converse rejected après correction : ${secondCheck.reason}`);
+          return null;
+        }
+        log("[LlmService] converse ok après correction");
+        return second;
       } catch (error) {
         const reason = error instanceof Error ? error.message : "erreur inconnue";
         log(`[LlmService] converse error : ${reason}`);
