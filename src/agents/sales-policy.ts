@@ -1,30 +1,32 @@
 /**
- * Politique commerciale de JulieShop, reprise dans les messages client.
- * Chaque option ci-dessous doit être confirmée par la boutique avant d'être activée :
- * tant qu'elle vaut false ou null, la ligne correspondante n'apparaît pas chez le client.
+ * Politique commerciale de JulieShop (Togo), reprise dans les messages client.
+ * Valeurs par défaut Togo : paiement à la livraison, vérification du matériel avant paiement, garantie 6 mois.
  */
 export interface SalesPolicy {
   readonly storeName: string;
-  /** Paiement à la livraison : à activer seulement si la boutique l'accepte réellement. */
+  /** Paiement à la livraison accepté. */
   readonly paymentOnDeliveryAvailable: boolean;
+  /** Moyens de paiement acceptés à la livraison. */
+  readonly paymentMethods: readonly string[];
   /** Vérification du matériel devant le client avant paiement. */
   readonly inspectBeforePaymentAvailable: boolean;
-  /** Garantie affichée au client (ex. « 3 mois sur les ordinateurs »), ou null si non confirmée. */
+  /** Garantie affichée au client, ou null si aucune. */
   readonly warranty: string | null;
 }
 
 export const SALES_POLICY: SalesPolicy = {
   storeName: "JulieShop",
-  paymentOnDeliveryAvailable: false,
-  inspectBeforePaymentAvailable: false,
-  warranty: null,
+  paymentOnDeliveryAvailable: true,
+  paymentMethods: ["espèces", "T-Money", "Flooz"],
+  inspectBeforePaymentAvailable: true,
+  warranty: "6 mois incluse",
 };
 
-/** Lignes de réassurance à afficher sur un récapitulatif, selon la politique confirmée. */
+/** Lignes de réassurance à afficher sur un récapitulatif, selon la politique en vigueur. */
 export function policyLines(policy: SalesPolicy = SALES_POLICY): string[] {
   const lines: string[] = [];
   if (policy.paymentOnDeliveryAvailable) {
-    lines.push("💵 Paiement à la livraison possible");
+    lines.push(`💵 Paiement à la livraison : ${policy.paymentMethods.join(", ")}`);
   }
   if (policy.inspectBeforePaymentAvailable) {
     lines.push("🔍 Vous vérifiez votre article avant de payer");
