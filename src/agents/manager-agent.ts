@@ -16,6 +16,7 @@ import { HitlValidator } from "./hitl";
 import { LogisticsAgent, detectZoneTerm } from "./logistics-agent";
 import { normalizeText } from "./normalize";
 import { SellerAgent } from "./seller-agent";
+import { hasFabricTerm, hasTechTerm, parseBudget, stripBudget } from "./intent-terms";
 
 export interface ManagerDeps {
   readonly catalog: Catalog;
@@ -28,7 +29,13 @@ export interface ManagerDeps {
 
 const ORDER_WORDS: readonly string[] = ["commande", "je prends", "je veux acheter", "confirme", "reserve", "je valide"];
 const DELIVERY_WORDS: readonly string[] = ["livr", "frais", "delai", "express", "zone"];
-const PRODUCT_WORDS: readonly string[] = ["cherche", "wax", "pagne", "motif", "disponible", "couleur", "prix"];
+const PRODUCT_WORDS: readonly string[] = [
+  "cherche", "wax", "pagne", "motif", "disponible", "couleur", "prix", "stock", "recommande", "conseil",
+  "propose", "montrez", "avez", "voir", "quel", "quelle", "quels", "budget", "moins de",
+];
+
+/** Termes qui signalent une demande de produit à partir du mot entier (pour « hp », « pc », « core »…). */
+const PRODUCT_WORD_BOUNDARY = /\b(pc|pcs|ordinateurs?|portables?|laptops?|macbooks?|mac|lenovo|thinkpad|dell|hp|asus|acer|machines?|core|intel|ryzen|gaming|bureau|tactile|ssd|ram|go|to|ghz|pouces?)\b/;
 
 /** Classe l'intention du message (règles déterministes, reproductibles hors ligne). */
 export function classifyIntent(message: string): Intent {
@@ -42,13 +49,22 @@ export function classifyIntent(message: string): Intent {
   if (PRODUCT_WORDS.some((word) => text.includes(word))) {
     return "product_inquiry";
   }
+  if (hasTechTerm(message) || hasFabricTerm(message) || parseBudget(message) !== null) {
+    return "product_inquiry";
+  }
+  if (PRODUCT_WORD_BOUNDARY.test(text)) {
+    return "product_inquiry";
+  }
   return "unknown";
 }
 
-/** Extrait la quantité demandée ("2 pagnes"), 1 par défaut. */
+/**
+ * Extrait la quantité demandée ("2 pagnes", "2 pièces"), 1 par défaut.
+ * Les montants (budget) et les spécifications (16 Go, 1 To, 3 GHz, 14 pouces) ne sont pas des quantités.
+ */
 export function parseQuantity(message: string): number {
-  const text = normalizeText(message);
-  const withUnit = text.match(/(\d{1,3})\s*(pagnes?|pieces?|pcs)/);
+  const text = stripSpecs(stripBudget(message));
+  const withUnit = text.match(/(\d{1,3})\s*(pagnes?|pieces?|pcs|ordinateurs?|pc|machines?|unites?)\b/);
   if (withUnit?.[1] !== undefined) {
     return Math.max(1, Number(withUnit[1]));
   }
@@ -57,6 +73,11 @@ export function parseQuantity(message: string): number {
     return Math.max(1, Number(bare[1]));
   }
   return 1;
+}
+
+/** Retire les spécifications techniques (quantité de RAM, de SSD, taille d'écran, fréquence). */
+export function stripSpecs(text: string): string {
+  return text.replace(/\d+ ?(?:go|gb|to|tb|ghz|mhz|pouces?|pouce|inch|w)\b/g, " ").replace(/\s+/g, " ").trim();
 }
 
 /**
@@ -77,8 +98,11 @@ export class ManagerAgent {
 
     const intent = classifyIntent(message);
     const quantity = parseQuantity(message);
+    const budget = parseBudget(message);
     const option: DeliveryOption = /express|urgent/.test(normalizeText(message)) ? "express" : "standard";
-    events.push(`Manager : intention « ${intent} », quantité ${quantity}, option de livraison ${option}.`);
+    events.push(
+      `Manager : intention « ${intent} », quantité ${quantity}, budget ${budget ?? "non précisé"}, option de livraison ${option}.`,
+    );
 
     const sellerResult = seller.recommend(message, quantity);
     delegations.push({
