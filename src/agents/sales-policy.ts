@@ -22,17 +22,18 @@ export const SALES_POLICY: SalesPolicy = {
   warranty: "6 mois incluse",
 };
 
-/** Lignes de réassurance à afficher sur un récapitulatif, selon la politique en vigueur. */
+/** Lignes de garantie et de paiement à afficher sur un récapitulatif, selon la politique en vigueur. */
 export function policyLines(policy: SalesPolicy = SALES_POLICY): string[] {
   const lines: string[] = [];
+  lines.push("*Conditions*");
   if (policy.paymentOnDeliveryAvailable) {
-    lines.push(`💵 Paiement à la livraison : ${policy.paymentMethods.join(", ")}`);
+    lines.push(`• Paiement à la livraison accepté : ${policy.paymentMethods.join(", ")}.`);
   }
   if (policy.inspectBeforePaymentAvailable) {
-    lines.push("🔍 Vous vérifiez votre article avant de payer");
+    lines.push("• Vous pouvez vérifier le matériel avant tout paiement.");
   }
   if (policy.warranty !== null) {
-    lines.push(`🛡️ Garantie : ${policy.warranty}`);
+    lines.push(`• Garantie : ${policy.warranty}.`);
   }
-  return lines;
+  return lines.length > 1 ? lines : [];
 }
