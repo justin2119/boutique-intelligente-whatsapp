@@ -7,9 +7,14 @@ export function etaPhrase(etaDays: number): string {
   return etaDays === 0 ? "livraison le jour même" : `délai estimé de ${etaDays} jour(s)`;
 }
 
+/** Question de qualification, posée naturellement par un conseiller (jamais de formulaire). */
+export const DISCOVERY_QUESTION =
+  "Pour vous orienter vers la machine adaptée, travaillez-vous plutôt en bureautique, en développement, en graphisme ou montage, pour des études ou pour le gaming ? Et quel budget envisagez-vous ?";
+
 /**
- * Agent Commercial : rédige UN message WhatsApp par tour, formel et direct (vouvoiement).
- * Chaque section ne reprend que ce que le client vient de demander ; la signature n'apparaît qu'une fois.
+ * Agent Commercial : rédige UN message WhatsApp par tour, naturel et direct, en vouvoiement.
+ * Chaque réponse répond à ce que le client vient de demander et propose une seule étape suivante.
+ * La signature n'apparaît que sur les messages de commande.
  */
 export class FormatterAgent {
   private readonly policy: SalesPolicy;
@@ -19,6 +24,14 @@ export class FormatterAgent {
   }
 
   compose(aggregated: AggregatedResponse): string {
+    if (aggregated.validation !== null) {
+      return [
+        orderSection(aggregated.validation, policyLines(this.policy)),
+        "Nous vous remercions de votre confiance.",
+        `Cordialement,\nL'équipe ${this.policy.storeName}`,
+      ].join("\n\n");
+    }
+
     const sections: string[] = [];
     if (aggregated.seller !== null) {
       sections.push(sellerSection(aggregated.seller));
@@ -26,15 +39,11 @@ export class FormatterAgent {
     if (aggregated.logistics !== null) {
       sections.push(logisticsSection(aggregated.logistics));
     }
-    if (aggregated.validation !== null) {
-      sections.push(orderSection(aggregated.validation, policyLines(this.policy)));
-    }
     if (sections.length === 0) {
-      sections.push(
-        "Pour vous orienter vers le modèle adapté, merci de préciser votre usage principal (bureautique, développement, graphisme ou montage, études, gaming) et votre budget.",
-      );
+      sections.push(DISCOVERY_QUESTION);
+    } else if (aggregated.seller?.kind === "available" && aggregated.logistics === null) {
+      sections.push("Souhaitez-vous une livraison ? Indiquez-moi simplement votre quartier ou votre ville, je vous communique aussitôt les frais et le délai.");
     }
-    sections.push(`Cordialement,\nL'équipe ${this.policy.storeName}`);
     return sections.join("\n\n");
   }
 }
@@ -60,11 +69,14 @@ function sellerSection(result: SellerResult): string {
         for (const alt of result.alternatives) {
           lines.push(`• *${alt.name}* (réf. ${alt.id}) : ${formatFcfa(alt.priceXof)}, ${alt.stock} unité(s) disponible(s)`);
         }
+        lines.push("Souhaitez-vous que nous comparions ces modèles ?");
+      } else {
+        lines.push("Indiquez-moi votre budget et votre usage, je vous proposerai une option équivalente.");
       }
       return lines.join("\n");
     }
     case "not_found":
-      return "Pour vous recommander le modèle adapté, merci de préciser votre usage principal (bureautique, développement, graphisme ou montage, études, gaming) et votre budget.";
+      return DISCOVERY_QUESTION;
   }
 }
 
@@ -98,13 +110,13 @@ function logisticsSection(result: LogisticsResult): string {
         `• Option : ${label}`,
         `• Frais : ${formatFcfa(result.feeXof)}`,
         `• Délai : ${etaPhrase(result.etaDays)}`,
-        "Merci de nous indiquer le créneau souhaité et l'adresse précise (repère, rue ou point de rencontre).",
+        "Indiquez-moi le créneau qui vous convient et l'adresse précise (repère, rue ou point de rencontre).",
       ].join("\n");
     }
     case "ambiguous":
-      return `*Livraison*\nMerci de préciser votre quartier parmi les zones suivantes : ${result.candidates.join(", ")}.`;
+      return `Plusieurs zones correspondent. Précisez-moi votre quartier parmi : ${result.candidates.join(", ")}.`;
     case "unknown_zone":
-      return `*Livraison*\nNous ne disposons pas encore de tarif pour « ${result.query} ». Merci de nous indiquer la ville ou le quartier de livraison.`;
+      return `Nous ne disposons pas encore de tarif pour « ${result.query} ». Indiquez-moi la ville ou le quartier de livraison.`;
   }
 }
 
