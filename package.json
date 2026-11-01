@@ -12,6 +12,7 @@
     "demo:palier2": "tsx src/demo-palier2.ts demo",
     "test:palier2": "tsx tests/palier2.test.ts",
     "test:palier3": "tsx tests/palier3.test.ts",
+    "test:llm": "tsx tests/llm-service.test.ts",
     "test": "echo \"Aucun test pour le moment\" && exit 0",
     "db:migrate:local": "wrangler d1 migrations apply boutique-orders --local",
     "db:migrate:remote": "wrangler d1 migrations apply boutique-orders --remote"
