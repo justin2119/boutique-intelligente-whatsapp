@@ -12,6 +12,7 @@ Le marché Dantokpa est l'un des plus grands marchés à ciel ouvert d'Afrique d
 - Backend : Cloudflare Worker écrit en TypeScript, qui reçoit les webhooks Green API et orchestre l'agent.
 - Agent : logique de conversation, outils (consultation du catalogue, prix, stock, panier), et mémoire de conversation par client.
 - Données : catalogue de pagnes en fichiers JSON versionnés dans `data/catalog/`, commandes dans D1, sessions et déduplication dans KV.
+- LLM : RodiumAI (API compatible OpenAI), utilisé uniquement en repli. Voir la section suivante.
 - Tests : `tests/`.
 
 Structure :
@@ -20,6 +21,7 @@ Structure :
 src/
   worker/   point d'entrée Cloudflare Worker (webhooks Green API, routage HTTP)
   agents/   logique de l'agent vendeur (Manager, Vendeur, Logisticien, Formateur, HITL)
+  services/ services externes (LLM RodiumAI en repli)
   data/     catalogue, stockage KV/D1 et mock mémoire
   lib/      client Green API
   tools/    outils appelables par l'agent (catalogue, prix, stock)
@@ -29,6 +31,36 @@ data/
 migrations/ schéma D1 (commandes)
 tests/
 ```
+
+## Architecture hybride : règles d'abord, LLM en repli
+
+Le bot fonctionne en deux étages :
+
+1. Règles déterministes (par défaut). Le Manager classe l'intention du message (`product_inquiry`, `delivery_inquiry`, `order_request`, `unknown`) par mots-clés et expressions, lit la quantité, le budget, l'option de livraison et le créneau, puis délègue au Vendeur, au Logisticien et au Formateur. Cette voie ne consomme aucun token et couvre la grande majorité des échanges (demandes de produit, de livraison, de commande, de créneau).
+2. Repli RodiumAI (optionnel, seulement si l'intention est `unknown`). Le service `src/services/llm-service.ts` peut extraire des champs structurés (température 0) ou répondre en conseil consultatif (température 0.2) à partir d'un catalogue compacté. Les réponses du LLM ne fixent jamais un prix ou un stock : les montants restent calculés par les outils déterministes.
+
+Si `RODIUM_API_KEY` n'est pas défini, aucun appel LLM n'est fait et le comportement reste entièrement déterministe.
+
+Le client ne peut pas valider sa propre commande : toute commande reste en validation humaine (voir Palier 2).
+
+## Optimisation des tokens
+
+Objectif : consommer le moins de tokens possible sans dégrader la qualité du service.
+
+- Priorité au déterministe : le LLM n'est appelé que lorsque `classifyIntent` renvoie `unknown` (fonction `shouldUseLlmFallback`). Les messages reconnus par les règles ne coûtent aucun token.
+- Limites de sortie : `max_tokens` 150 pour l'extraction structurée, 300 pour le conseil.
+- Prompts compacts : instructions denses, sans prose superflue. Le conseil reçoit un catalogue sous forme de lignes `id|nom|prix|stock|catégorie`, limité à 8 produits en stock.
+- Historique réduit : seuls les 4 derniers messages sont injectés dans le prompt de conseil.
+- Température : 0 pour l'extraction (sortie stable et courte), 0.2 pour le dialogue.
+- Délai maximal : 8 secondes par appel. En cas d'erreur ou de délai dépassé, le bot répond par son message déterministe.
+
+## Variables d'environnement LLM (RodiumAI)
+
+- `RODIUM_API_KEY` : clé d'API RodiumAI. Secret : `wrangler secret put RODIUM_API_KEY`, ou dans `.dev.vars` en local. Si absente, le repli LLM est désactivé.
+- `RODIUM_BASE_URL` : URL de base de l'API. Valeur par défaut : `https://api.rodiumai.io/v1`.
+- `RODIUM_MODEL` : modèle utilisé. Valeur par défaut : `openai/gpt-6-luna` (alternative : `rodiumai/basic`).
+
+Ces trois variables sont décrites dans `.dev.vars.example`.
 
 ## Palier 1 : architecture
 
@@ -125,7 +157,7 @@ Flux d'un message entrant :
 2. Le Worker vérifie le secret (en-tête `x-webhook-secret` ou `Authorization: Bearer`) si `WEBHOOK_SECRET` est défini, puis lit la notification. Les notifications non textuelles, les groupes et les instances inconnues sont ignorées.
 3. Idempotence : si le `idMessage` a déjà été traité (clé KV), la requête est ignorée (`status: duplicate`).
 4. Si l'expéditeur est le gérant (`MANAGER_PHONE`) et que le message est `VALIDER CMD-...` ou `REFUSER CMD-...`, la commande est décidée, enregistrée en D1 et le client est notifié.
-5. Sinon, le message client est confié au Manager (Palier 2) : Vendeur, Logisticien, puis Formateur WhatsApp.
+5. Sinon, le message client est confié au Manager (Palier 2) : Vendeur, Logisticien, puis Formateur WhatsApp. Le repli LLM s'applique uniquement si l'intention est `unknown`.
 6. Si une commande est assemblée, elle est enregistrée en D1 avec le statut `PENDING_HUMAN_VALIDATION` et le gérant reçoit un récapitulatif avec les commandes `VALIDER` ou `REFUSER`.
 7. La réponse formatée est envoyée au client via `sendMessage` de Green API.
 
@@ -136,6 +168,7 @@ Le client ne peut pas valider sa propre commande : seule la décision du gérant
 Variables non secrètes (dans `wrangler.toml`, section `[vars]`) :
 
 - `GREEN_API_BASE_URL` : `https://api.green-api.com`.
+- `RODIUM_BASE_URL` et `RODIUM_MODEL` peuvent aussi être placées dans `[vars]` (valeurs par défaut : voir la section LLM).
 
 Secrets (à définir avec `wrangler secret put` en production, ou dans `.dev.vars` en local) :
 
@@ -143,6 +176,7 @@ Secrets (à définir avec `wrangler secret put` en production, ou dans `.dev.var
 - `GREEN_API_TOKEN_INSTANCE` : jeton de l'instance Green API.
 - `WEBHOOK_SECRET` : secret partagé vérifié sur chaque webhook. Recommandé en production.
 - `MANAGER_PHONE` : numéro du gérant au format international sans le signe plus (par exemple 22900000000). Requis pour la validation humaine.
+- `RODIUM_API_KEY` : clé RodiumAI, optionnelle. Sans elle, le repli LLM est désactivé.
 
 Modèle de configuration locale : `.dev.vars.example` (copier vers `.dev.vars`, ne jamais committer `.dev.vars`).
 
@@ -159,6 +193,7 @@ pnpm exec wrangler secret put GREEN_API_ID_INSTANCE
 pnpm exec wrangler secret put GREEN_API_TOKEN_INSTANCE
 pnpm exec wrangler secret put WEBHOOK_SECRET
 pnpm exec wrangler secret put MANAGER_PHONE
+pnpm exec wrangler secret put RODIUM_API_KEY   # optionnel
 ```
 
 6. Déployer : `pnpm run deploy`. L'URL affichée (par exemple `https://boutique-intelligente-whatsapp.<compte>.workers.dev`) sert de base aux webhooks.
@@ -208,11 +243,29 @@ Les tests couvrent le parsing des notifications, le client Green API (URL, repri
 
 Limites connues : la cohérence KV est éventuelle (une même notification envoyée deux fois très rapidement peut être traitée deux fois). Le compteur de validations du HITL est en mémoire et redémarre à chaque requête ; les commandes sont identifiées par leur référence `CMD-...` en D1.
 
+## Lancer et tester
+
+Commandes principales :
+
+```
+pnpm install
+pnpm run test:palier2     # routage, vendeur, logistique, HITL
+pnpm run test:palier3     # webhook, déduplication, gérant, HTTP
+pnpm run typecheck
+pnpm run demo:palier1
+pnpm run demo:palier2
+pnpm dev                  # worker local avec Wrangler
+pnpm run deploy
+```
+
+Les tests des paliers 2 et 3 ne font appel à aucune API externe : ils sont reproductibles hors ligne et n'utilisent pas de clé RodiumAI.
+
 ## Outils
 
 - TypeScript
 - Cloudflare Workers et Wrangler
 - Green API (WhatsApp)
+- RodiumAI (repli LLM, optionnel)
 - tsx (exécution locale de la démo et des tests)
 
 ## Installation
@@ -221,7 +274,7 @@ Prérequis : Node.js 20 ou plus récent, pnpm (ou npm).
 
 ```
 pnpm install
-cp .dev.vars.example .dev.vars   # renseigner les clés Green API (ne jamais committer ce fichier)
+cp .dev.vars.example .dev.vars   # renseigner les clés Green API et, si besoin, RODIUM_API_KEY (ne jamais committer ce fichier)
 pnpm dev                         # lancement local avec Wrangler
 pnpm typecheck
 pnpm run demo:palier1            # démo du Palier 1
@@ -231,4 +284,4 @@ pnpm run test:palier3            # tests du Palier 3
 pnpm run deploy                  # déploiement sur Cloudflare
 ```
 
-Les secrets (identifiant et jeton d'instance Green API, secret du webhook, numéro du gérant, clé d'API LLM) doivent être stockés dans `.dev.vars` en local et via `wrangler secret put` en production.
+Les secrets (identifiant et jeton d'instance Green API, secret du webhook, numéro du gérant, clé d'API RodiumAI) doivent être stockés dans `.dev.vars` en local et via `wrangler secret put` en production.
