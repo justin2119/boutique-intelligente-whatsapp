@@ -5,7 +5,8 @@
  * - advise()  : conseil consultatif, température 0.2, max_tokens 300, catalogue compacté.
  * Sans RODIUM_API_KEY, aucun service n'est créé : le comportement reste strictement déterministe.
  */
-import type { Intent, Product } from "../types";
+import type { Product } from "../types";
+import type { Intent } from "../types/palier2";
 
 export const RODIUM_DEFAULT_BASE_URL = "https://api.rodiumai.io/v1";
 export const RODIUM_DEFAULT_MODEL = "openai/gpt-6-luna";
