@@ -46,6 +46,22 @@ const ALTERNATIVE_WORDS = /\b(un autre|une autre|autre chose|d autres?|autres? (
 const PRODUCT_WORD_BOUNDARY = /\b(pc|pcs|ordinateurs?|portables?|laptops?|macbooks?|mac|lenovo|thinkpad|dell|hp|asus|acer|machines?|core|intel|ryzen|gaming|bureau|tactile|ssd|ram|go|to|ghz|pouces?)\b/;
 
 /**
+ * Nombres en français (texte normalisé, sans accents) : quantités écrites en lettres.
+ * « un » et « une » valent 1 ; « deux » à « vingt » et les dizaines usuelles sont couverts.
+ */
+const FRENCH_NUMBERS: Readonly<Record<string, number>> = {
+  un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7, huit: 8, neuf: 9, dix: 10,
+  onze: 11, douze: 12, treize: 13, quatorze: 14, quinze: 15, seize: 16, vingt: 20, trente: 30,
+  quarante: 40, cinquante: 50,
+};
+
+/** Mots de quantité reconnus après un nombre (texte normalisé). */
+const QUANTITY_NOUN = "(pagnes?|pieces?|pcs|ordinateurs?|pc|machines?|unites?|paires?|boucles?|articles?|exemplaires?|fois)";
+
+/** Motif d'un nombre écrit en lettres ou en chiffres, suivi d'un mot de quantité (texte normalisé). */
+const NUMBER_WORD_PATTERN = new RegExp(`\\b(\\d{1,3}|${Object.keys(FRENCH_NUMBERS).join("|")})\\s*${QUANTITY_NOUN}\\b`);
+
+/**
  * Contenu d'ordre à ne jamais reformuler : références de commande, codes de validation et mots-clés de commande gérant.
  * Un message qui en contient un reste exactement tel que produit par les règles.
  */
@@ -73,20 +89,33 @@ export function classifyIntent(message: string): Intent {
 }
 
 /**
- * Extrait la quantité demandée ("2 unités", "2 ordinateurs"), 1 par défaut.
+ * Extrait la quantité demandée : chiffres (« 2 unités ») ou mots (« deux paires », « j'en veux deux »), 1 par défaut.
  * Les montants (budget) et les spécifications (16 Go, 1 To, 3 GHz, 14 pouces) ne sont pas des quantités.
  */
 export function parseQuantity(message: string): number {
-  const text = stripSpecs(stripBudget(message));
-  const withUnit = text.match(/(\d{1,3})\s*(pagnes?|pieces?|pcs|ordinateurs?|pc|machines?|unites?)\b/);
+  const text = normalizeText(stripSpecs(stripBudget(message)));
+  const withUnit = text.match(NUMBER_WORD_PATTERN);
   if (withUnit?.[1] !== undefined) {
-    return Math.max(1, Number(withUnit[1]));
+    return Math.max(1, wordToNumber(withUnit[1]));
+  }
+  // « j'en veux deux » : pronom « en » suivi d'un nombre en lettres, sans nom de produit.
+  const pronoun = text.match(/\ben (?:veux|prends|voudrais|souhaite|commande)\s+(\d{1,3}|[a-z]+)\b/);
+  if (pronoun?.[1] !== undefined && pronoun[1] in FRENCH_NUMBERS) {
+    return FRENCH_NUMBERS[pronoun[1]] ?? 1;
   }
   const bare = text.match(/(?<![\w-])(\d{1,3})(?![\w-])/);
   if (bare?.[1] !== undefined) {
     return Math.max(1, Number(bare[1]));
   }
   return 1;
+}
+
+/** Convertit un nombre en chiffres ou en lettres (texte normalisé) en entier. */
+function wordToNumber(token: string): number {
+  if (/^\d+$/.test(token)) {
+    return Number(token);
+  }
+  return FRENCH_NUMBERS[token] ?? 1;
 }
 
 /** Retire les spécifications techniques (quantité de RAM, de SSD, taille d'écran, fréquence). */
@@ -232,6 +261,7 @@ export class ManagerAgent {
           budget,
           optionsForFacts,
           wantsAlternative,
+          slot: slotForDraft,
         });
     const customerMessage = conversational ?? deterministicMessage;
     delegations.push({
@@ -292,6 +322,7 @@ export class ManagerAgent {
     readonly budget: number | null;
     readonly optionsForFacts: readonly Product[];
     readonly wantsAlternative: boolean;
+    readonly slot: string | null;
   }): Promise<string | null> {
     const { llm, catalog } = this.deps;
     if (llm === undefined) {
@@ -301,6 +332,7 @@ export class ManagerAgent {
     const allowedAmounts = [
       ...(input.budget !== null ? [input.budget] : []),
       ...catalog.products.map((p) => p.priceXof),
+      ...orderTotalsFor(input.sellerResult, input.logisticsResult),
     ];
     try {
       return await llm.converse({ message: input.message, history: input.history, facts, allowedAmounts });
@@ -338,9 +370,22 @@ export class ManagerAgent {
   }
 }
 
+/** Montants calculés pour la commande (sous-total, total général) : autorisés dans la réponse du LLM. */
+function orderTotalsFor(
+  sellerResult: SellerResult,
+  logisticsResult: LogisticsResult | null,
+): number[] {
+  if (sellerResult.kind !== "available" || logisticsResult?.kind !== "quoted") {
+    return [];
+  }
+  return [sellerResult.subtotalXof, logisticsResult.feeXof, sellerResult.subtotalXof + logisticsResult.feeXof];
+}
+
 /**
  * Lignes de faits vérifiés transmises au LLM. Chaque montant, délai et référence vient des règles.
  * Un produit non trouvé ou une zone inconnue est signalé comme tel, pour que le LLM ne l'invente pas.
+ * Quand produit, quantité et livraison sont connus, le détail de commande (sous-total, frais, total général)
+ * est donné en entier, et les informations manquantes pour finaliser (créneau, repère) sont demandées.
  */
 export function buildFacts(
   input: {
@@ -354,6 +399,7 @@ export function buildFacts(
     readonly budget?: number | null;
     readonly optionsForFacts?: readonly Product[];
     readonly wantsAlternative?: boolean;
+    readonly slot?: string | null;
   },
   products: readonly Product[],
 ): string[] {
@@ -369,7 +415,7 @@ export function buildFacts(
     lines.push(`Produit : ${seller.product.name} (réf. ${seller.product.id}), catégorie ${seller.product.category}.`);
     lines.push(`Disponibilité : en stock (${seller.product.stock} unité(s) disponible(s)).`);
     lines.push(`Prix unitaire : ${formatFcfa(seller.product.priceXof)}.`);
-    lines.push(`Sous-total pour ${seller.quantity} unité(s) : ${formatFcfa(seller.subtotalXof)}.`);
+    lines.push(`Quantité demandée : ${seller.quantity} unité(s).`);
     if (seller.product.tags.length > 0) {
       lines.push(`Caractéristiques : ${seller.product.tags.join(", ")}.`);
     }
@@ -403,9 +449,6 @@ export function buildFacts(
   const logistics = input.logisticsResult;
   if (logistics?.kind === "quoted") {
     lines.push(`Livraison ${input.option === "express" ? "express" : "standard"} vers ${logistics.zone.zone} : frais ${formatFcfa(logistics.feeXof)}, ${etaPhrase(logistics.etaDays)}.`);
-    if (seller.kind === "available") {
-      lines.push(`Total avec livraison : ${formatFcfa(seller.subtotalXof + logistics.feeXof)}.`);
-    }
   } else if (logistics?.kind === "ambiguous") {
     lines.push(`Zone ambiguë : préciser parmi ${logistics.candidates.join(", ")}.`);
   } else if (logistics?.kind === "unknown_zone") {
@@ -413,12 +456,35 @@ export function buildFacts(
   } else if (input.askZone) {
     lines.push("Aucune zone de livraison indiquée : demander le quartier ou la ville.");
   }
+
+  // Détail de commande : produit disponible, quantité connue et livraison chiffrée.
+  if (seller.kind === "available" && logistics?.kind === "quoted") {
+    const subtotal = seller.subtotalXof;
+    const total = subtotal + logistics.feeXof;
+    lines.push(
+      `Détail de la commande : ${seller.quantity} × ${formatFcfa(seller.product.priceXof)} = ${formatFcfa(subtotal)} pour les articles.`,
+    );
+    lines.push(`Frais de livraison : ${formatFcfa(logistics.feeXof)}.`);
+    lines.push(`Total général : ${formatFcfa(total)}.`);
+    lines.push(
+      `Sous-total articles : ${formatFcfa(subtotal)}, Frais de livraison : ${formatFcfa(logistics.feeXof)}, Total général : ${formatFcfa(total)}.`,
+    );
+    lines.push("Le total est déjà calculé : le donner directement au client, sans dire qu'on le vérifie.");
+    // Informations manquantes pour finaliser la commande.
+    const missing: string[] = [];
+    if (input.slot === undefined || input.slot === null) {
+      missing.push("le créneau de livraison souhaité");
+    }
+    missing.push("le repère ou l'adresse précise de livraison");
+    lines.push(`Pour finaliser la commande, demander au client : ${missing.join(" et ")}.`);
+  }
   return lines;
 }
 
 /** Une quantité n'est lue que si le client la mentionne (sinon on garde celle de la conversation). */
 function mentionsQuantity(message: string): boolean {
-  return /\d{1,3}\s*(pagnes?|pieces?|pcs|ordinateurs?|pc|machines?|unites?)\b/.test(normalizeText(stripBudget(message)));
+  const text = normalizeText(stripSpecs(stripBudget(message)));
+  return NUMBER_WORD_PATTERN.test(text) || /\ben (?:veux|prends|voudrais|souhaite|commande)\s+(?:\d|[a-z]+)/.test(text);
 }
 
 function nextContext(
