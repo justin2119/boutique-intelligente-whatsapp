@@ -5,7 +5,8 @@
 import { FormatterAgent } from "../agents/formatter-agent";
 import { HitlValidator } from "../agents/hitl";
 import { LogisticsAgent } from "../agents/logistics-agent";
-import { ManagerAgent } from "../agents/manager-agent";
+import { ManagerAgent, classifyIntent } from "../agents/manager-agent";
+import { parseSlot } from "../agents/intent-terms";
 import { formatFcfa } from "../agents/normalize";
 import { SellerAgent } from "../agents/seller-agent";
 import { loadCatalog } from "../data/catalog";
@@ -84,6 +85,11 @@ const MANAGER_COMMAND = /^(VALIDER|REFUSER)\s+(CMD-[A-Z0-9]+)$/i;
 /** Durée de vie du contexte de conversation (le client revient souvent dans les 48 h). */
 export const CONTEXT_TTL_SECONDS = 48 * 60 * 60;
 
+/** Contexte stocké : contexte du Manager, plus la référence de la dernière commande envoyée en validation. */
+export interface StoredContext extends ConversationContext {
+  readonly lastOrderReference?: string | null;
+}
+
 /** Réponses aux messages non textuels : une seule phrase, sans salutation répétée. */
 const NON_TEXT_REPLIES: Record<NonTextMediaType, string> = {
   audio: "Nous ne pouvons pas écouter le message vocal. Merci de nous indiquer votre demande par écrit, nous vous répondrons aussitôt.",
@@ -147,6 +153,7 @@ function managerSummary(draft: OrderDraft, customerPhone: string): string {
     `Client : ${customerPhone}`,
     ...draft.lines.map((line) => `• ${line.name} x${line.quantity} : ${formatFcfa(line.lineTotalXof)}`),
     `Total : ${formatFcfa(draft.totalXof)} (livraison ${draft.zoneLabel}, ${draft.option}).`,
+    ...(draft.slot ? [`Créneau souhaité : ${draft.slot}`] : []),
     `Répondez VALIDER ${draft.reference} ou REFUSER ${draft.reference}.`,
   ].join("\n");
 }
@@ -175,37 +182,96 @@ export function contextKey(phone: string): string {
 }
 
 /** Lit le contexte sauvegardé. Une valeur absente ou illisible donne un contexte vide (jamais bloquant). */
-export async function readContext(kv: KvLike, phone: string): Promise<ConversationContext> {
+export async function readContext(kv: KvLike, phone: string): Promise<StoredContext> {
   const raw = await kv.get(contextKey(phone));
   if (raw === null) {
     return {};
   }
   try {
     const parsed: unknown = JSON.parse(raw);
-    return isRecord(parsed) ? (parsed as ConversationContext) : {};
+    return isRecord(parsed) ? (parsed as StoredContext) : {};
   } catch {
     return {};
   }
 }
 
 /** Sauvegarde le contexte mis à jour, avec une durée de vie de 48 h. */
-export async function writeContext(kv: KvLike, phone: string, context: ConversationContext): Promise<void> {
+export async function writeContext(kv: KvLike, phone: string, context: StoredContext): Promise<void> {
   await kv.put(contextKey(phone), JSON.stringify(context), { expirationTtl: CONTEXT_TTL_SECONDS });
 }
 
-/** Clés et types validés avant réutilisation : un contexte corrompu ne doit jamais casser une réponse. */
-export function sanitizeContext(value: ConversationContext): ConversationContext {
+/**
+ * Clés et types validés avant réutilisation : un contexte corrompu ne doit jamais casser une réponse.
+ * Préserve lastSlot, orderPlaced et lastOrderReference (persistance KV entre deux messages).
+ */
+export function sanitizeContext(value: StoredContext): StoredContext {
   const option: DeliveryOption | null = value.lastOption === "express" || value.lastOption === "standard" ? value.lastOption : null;
   return {
     lastProductId: typeof value.lastProductId === "string" ? value.lastProductId : null,
     lastQuantity: typeof value.lastQuantity === "number" && value.lastQuantity > 0 ? value.lastQuantity : null,
     lastZoneTerm: typeof value.lastZoneTerm === "string" ? value.lastZoneTerm : null,
     lastOption: option,
+    lastSlot: typeof value.lastSlot === "string" ? value.lastSlot : null,
+    orderPlaced: value.orderPlaced === true,
+    lastOrderReference: typeof value.lastOrderReference === "string" ? value.lastOrderReference : null,
   };
+}
+
+/**
+ * Suivi d'une commande déjà envoyée en validation : un créneau ou une précision du client
+ * ne renvoie pas le devis. Le gérant est prévenu, le client reçoit un accusé dédié.
+ * Renvoie null si le message ne relève pas d'un suivi (nouvelle demande produit, commande, etc.).
+ */
+async function handleOrderFollowUp(
+  message: IncomingTextMessage,
+  deps: WorkerDeps,
+  previous: StoredContext,
+): Promise<WebhookOutcome | null> {
+  const reference = previous.lastOrderReference ?? null;
+  if (previous.orderPlaced !== true || reference === null) {
+    return null;
+  }
+  const slot = parseSlot(message.text);
+  const isPrecision = slot === null && classifyIntent(message.text) === "unknown";
+  if (slot === null && !isPrecision) {
+    return null;
+  }
+  const { storage, sender, clock, config } = deps;
+  const customerMessage =
+    slot !== null
+      ? `Votre commande ${reference} est déjà enregistrée. Le créneau a été mis à jour et transmis au gérant.`
+      : `Votre commande ${reference} est déjà enregistrée. Votre précision a été transmise au gérant.`;
+  if (config.managerPhone !== undefined) {
+    const notice =
+      slot !== null
+        ? `Créneau mis à jour pour la commande ${reference} (client ${message.senderPhone}) : ${slot}. Commande toujours en validation.`
+        : `Précision du client pour la commande ${reference} (client ${message.senderPhone}) : ${message.text}`;
+    await sender.sendText(chatIdFor(config.managerPhone), notice);
+  }
+  await sender.sendText(message.chatId, customerMessage);
+  const now = clock().toISOString();
+  await appendHistory(storage.kv, message.senderPhone, [
+    { role: "customer", text: message.text, at: now },
+    { role: "assistant", text: customerMessage, at: now },
+  ]);
+  await writeContext(storage.kv, message.senderPhone, {
+    ...previous,
+    lastSlot: slot ?? previous.lastSlot ?? null,
+    orderPlaced: true,
+    lastOrderReference: reference,
+  });
+  return { status: "replied", messageId: message.messageId, orderReference: reference };
 }
 
 async function handleCustomerMessage(message: IncomingTextMessage, deps: WorkerDeps): Promise<WebhookOutcome> {
   const { catalog, clock, storage, sender, config } = deps;
+  const previous = sanitizeContext(await readContext(storage.kv, message.senderPhone));
+
+  const followUp = await handleOrderFollowUp(message, deps, previous);
+  if (followUp !== null) {
+    return followUp;
+  }
+
   const hitl = new HitlValidator(clock);
   const manager = new ManagerAgent({
     catalog,
@@ -215,7 +281,6 @@ async function handleCustomerMessage(message: IncomingTextMessage, deps: WorkerD
     hitl,
     clock,
   });
-  const previous = sanitizeContext(await readContext(storage.kv, message.senderPhone));
   const trace = await manager.handle(message.text, previous);
 
   let orderReference: string | null = null;
@@ -235,7 +300,10 @@ async function handleCustomerMessage(message: IncomingTextMessage, deps: WorkerD
     { role: "assistant", text: trace.customerMessage, at: now },
   ]);
   if (trace.context !== undefined) {
-    await writeContext(storage.kv, message.senderPhone, trace.context);
+    await writeContext(storage.kv, message.senderPhone, {
+      ...trace.context,
+      lastOrderReference: orderReference ?? previous.lastOrderReference ?? null,
+    });
   }
   return { status: "replied", messageId: message.messageId, orderReference };
 }
