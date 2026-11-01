@@ -39,6 +39,9 @@ const PRODUCT_WORDS: readonly string[] = [
   "pour", "comparer", "comparaison", "difference", "meilleur", "vaut",
 ];
 
+/** Demande d'une autre option (« un autre », « autre chose », « pas celui-là », « un moins cher »). */
+const ALTERNATIVE_WORDS = /\b(un autre|une autre|autre chose|d autres?|autres? (?:modeles?|options?|propositions?|machines?|ordinateurs?)|pas celui|pas celle|moins cher|moins chere|plus abordable|autre modele|autre option)\b/;
+
 /** Termes qui signalent une demande de produit à partir du mot entier (pour « hp », « pc », « core »…). */
 const PRODUCT_WORD_BOUNDARY = /\b(pc|pcs|ordinateurs?|portables?|laptops?|macbooks?|mac|lenovo|thinkpad|dell|hp|asus|acer|machines?|core|intel|ryzen|gaming|bureau|tactile|ssd|ram|go|to|ghz|pouces?)\b/;
 
@@ -91,6 +94,11 @@ export function stripSpecs(text: string): string {
   return text.replace(/\d+ ?(?:go|gb|to|tb|ghz|mhz|pouces?|pouce|inch|w)\b/g, " ").replace(/\s+/g, " ").trim();
 }
 
+/** Vrai si le client demande une autre option que celle proposée précédemment. */
+export function asksAlternative(message: string): boolean {
+  return ALTERNATIVE_WORDS.test(normalizeText(message));
+}
+
 /**
  * Agent Manager / Orchestrateur : analyse l'intention, délègue aux spécialistes,
  * agrège les résultats et met toute commande en validation humaine.
@@ -120,27 +128,43 @@ export class ManagerAgent {
     const budget = parseBudget(message);
     const explicitOption: DeliveryOption | null = /express|urgent|vite|rapide/.test(normalizeText(message)) ? "express" : null;
     const option: DeliveryOption = explicitOption ?? context.lastOption ?? "standard";
+    const wantsAlternative = asksAlternative(message);
     events.push(
-      `Manager : intention « ${intent} », quantité ${quantity}, budget ${budget ?? "non précisé"}, option de livraison ${option}, créneau ${slot ?? "non précisé"}.`,
+      `Manager : intention « ${intent} », quantité ${quantity}, budget ${budget ?? "non précisé"}, option de livraison ${option}, créneau ${slot ?? "non précisé"}, autre option ${wantsAlternative ? "demandée" : "non"}.`,
     );
 
     const hasContextProduct = context.lastProductId !== undefined && context.lastProductId !== null;
-    // Produit nouvellement cité dans le message.
+    // Produit nouvellement cité dans le message (recherche par mots-clés, budget compris).
     const freshResult = seller.recommend(message, quantity);
-    // Sans nouveau produit cité, on reprend celui de la conversation (question de suivi, livraison, prix, usage, créneau).
-    const reuseContext =
-      hasContextProduct && freshResult.kind === "not_found" && (intent !== "order_request" || slot !== null);
-    const sellerResult: SellerResult = reuseContext
-      ? seller.byId(context.lastProductId as string, quantity)
-      : freshResult;
-    delegations.push({
-      from: "manager",
-      to: "seller",
-      task: reuseContext
-        ? `Reprendre le produit de la conversation (${quantity} unité(s))`
-        : `Rechercher le produit et vérifier le stock (${quantity} unité(s))`,
-      output: describeSeller(sellerResult),
-    });
+    // Recherche d'un autre produit : budget donné, ou demande d'alternative. Le produit refusé est exclu.
+    const searchesOther = intent !== "order_request" && (budget !== null || wantsAlternative);
+    let sellerResult: SellerResult;
+    let optionsForFacts: Product[] = [];
+    if (searchesOther) {
+      const excluded = wantsAlternative && context.lastProductId ? [context.lastProductId] : [];
+      const pool = this.computerOptions(budget, excluded);
+      optionsForFacts = pool;
+      sellerResult = pool.length > 0 ? seller.byId(pool[0].id, quantity) : { kind: "not_found", query: message };
+      delegations.push({
+        from: "manager",
+        to: "seller",
+        task: `Rechercher une autre option (budget ${budget ?? "libre"}, exclusion ${excluded.join(", ") || "aucune"})`,
+        output: pool.length > 0 ? `${pool.length} option(s), meilleure : ${pool[0].id}` : "aucune option sous ce budget",
+      });
+    } else {
+      // Sans nouveau produit cité, on reprend celui de la conversation (question de suivi, livraison, prix, usage, créneau).
+      const reuseContext =
+        hasContextProduct && freshResult.kind === "not_found" && (intent !== "order_request" || slot !== null);
+      sellerResult = reuseContext ? seller.byId(context.lastProductId as string, quantity) : freshResult;
+      delegations.push({
+        from: "manager",
+        to: "seller",
+        task: reuseContext
+          ? `Reprendre le produit de la conversation (${quantity} unité(s))`
+          : `Rechercher le produit et vérifier le stock (${quantity} unité(s))`,
+        output: describeSeller(sellerResult),
+      });
+    }
 
     const zoneTerm = detectZoneTerm(message, catalog.zones) ?? (hasContextProduct ? context.lastZoneTerm ?? null : null);
     let logisticsResult: LogisticsResult | null = null;
@@ -205,6 +229,9 @@ export class ManagerAgent {
           option,
           quantity,
           context,
+          budget,
+          optionsForFacts,
+          wantsAlternative,
         });
     const customerMessage = conversational ?? deterministicMessage;
     delegations.push({
@@ -238,9 +265,19 @@ export class ManagerAgent {
   }
 
   /**
-   * Construit les faits vérifiés (une ligne par fait) à partir des résultats des règles,
-   * puis demande au LLM une réponse conversationnelle. Renvoie null sans LLM ou si la réponse est rejetée :
-   * l'appelant garde alors le gabarit déterministe. Aucun fait n'est inventé ici.
+   * Ordinateurs en stock, triés par prix croissant. Si un budget est donné, on garde ceux qui le respectent.
+   * Les produits exclus (refusés par le client) sont retirés. Triés aussi par prix pour que la meilleure
+   * option proposée soit la moins chère qui respecte le budget.
+   */
+  private computerOptions(budget: number | null, excludedIds: readonly string[]): Product[] {
+    return this.deps.seller
+      .listComputers(budget)
+      .filter((p) => !excludedIds.includes(p.id));
+  }
+
+  /**
+   * Construit les faits vérifiés et demande au LLM une réponse conversationnelle. Renvoie null sans LLM
+   * ou si la réponse est rejetée : l'appelant garde alors le gabarit déterministe.
    */
   private async converseWithFacts(input: {
     readonly message: string;
@@ -252,14 +289,21 @@ export class ManagerAgent {
     readonly option: DeliveryOption;
     readonly quantity: number;
     readonly context: ConversationContext;
+    readonly budget: number | null;
+    readonly optionsForFacts: readonly Product[];
+    readonly wantsAlternative: boolean;
   }): Promise<string | null> {
     const { llm, catalog } = this.deps;
     if (llm === undefined) {
       return null;
     }
     const facts = buildFacts(input, catalog.products);
+    const allowedAmounts = [
+      ...(input.budget !== null ? [input.budget] : []),
+      ...catalog.products.map((p) => p.priceXof),
+    ];
     try {
-      return await llm.converse({ message: input.message, history: input.history, facts });
+      return await llm.converse({ message: input.message, history: input.history, facts, allowedAmounts });
     } catch {
       return null;
     }
@@ -307,11 +351,20 @@ export function buildFacts(
     readonly option: DeliveryOption;
     readonly quantity: number;
     readonly context: ConversationContext;
+    readonly budget?: number | null;
+    readonly optionsForFacts?: readonly Product[];
+    readonly wantsAlternative?: boolean;
   },
   products: readonly Product[],
 ): string[] {
   const lines: string[] = [];
   const seller = input.sellerResult;
+  if (input.budget !== undefined && input.budget !== null) {
+    lines.push(`Budget indiqué par le client : ${formatFcfa(input.budget)}.`);
+  }
+  if (input.wantsAlternative) {
+    lines.push("Le client demande une autre option que celle proposée précédemment.");
+  }
   if (seller.kind === "available") {
     lines.push(`Produit : ${seller.product.name} (réf. ${seller.product.id}), catégorie ${seller.product.category}.`);
     lines.push(`Disponibilité : en stock (${seller.product.stock} unité(s) disponible(s)).`);
@@ -330,7 +383,22 @@ export function buildFacts(
       lines.push("Aucune alternative disponible pour l'instant.");
     }
   } else {
-    lines.push("Aucun produit précis n'a été identifié dans ce message.");
+    lines.push("Aucun produit ne correspond exactement à la demande dans ce message.");
+  }
+  const options = input.optionsForFacts ?? [];
+  if (options.length > 0) {
+    lines.push("Ordinateurs en stock proposables (du moins cher au plus cher) :");
+    for (const p of options.slice(0, 6)) {
+      lines.push(`- ${p.name} (réf. ${p.id}), ${formatFcfa(p.priceXof)}, ${p.tags.join(", ")}.`);
+    }
+  } else if (input.budget !== undefined && input.budget !== null) {
+    lines.push(`Aucun ordinateur en stock ne correspond à ce budget de ${formatFcfa(input.budget)}.`);
+    const cheapest = (products as readonly Product[])
+      .filter((p) => p.category === "ordinateur" && p.stock > 0)
+      .sort((a, b) => a.priceXof - b.priceXof)[0];
+    if (cheapest !== undefined) {
+      lines.push(`Le modèle le moins cher en stock est ${cheapest.name} (réf. ${cheapest.id}) à ${formatFcfa(cheapest.priceXof)}.`);
+    }
   }
   const logistics = input.logisticsResult;
   if (logistics?.kind === "quoted") {
@@ -344,10 +412,6 @@ export function buildFacts(
     lines.push(`Zone « ${logistics.query} » non couverte par un tarif : demander la ville ou le quartier.`);
   } else if (input.askZone) {
     lines.push("Aucune zone de livraison indiquée : demander le quartier ou la ville.");
-  }
-  if (products.length > 0 && seller.kind === "not_found") {
-    const inStock = products.filter((p) => p.stock > 0).slice(0, 8);
-    lines.push(`Produits disponibles au catalogue : ${inStock.map((p) => `${p.name} (réf. ${p.id}, ${formatFcfa(p.priceXof)})`).join(" ; ")}.`);
   }
   return lines;
 }
