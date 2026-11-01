@@ -13,5 +13,16 @@
   { "id": "porto-novo", "zone": "Porto-Novo", "city": "Porto-Novo", "aliases": ["porto novo"], "feeXof": 3500, "etaDays": 2 },
   { "id": "seme-kpodji", "zone": "Sèmè-Kpodji", "city": "Sèmè-Kpodji", "aliases": [], "feeXof": 3000, "etaDays": 2 },
   { "id": "ouidah", "zone": "Ouidah", "city": "Ouidah", "aliases": [], "feeXof": 4000, "etaDays": 2 },
-  { "id": "lome-togo", "zone": "Lomé (Togo)", "city": "Lomé", "aliases": ["lome", "togo"], "feeXof": 12000, "etaDays": 4 }
+  { "id": "togo-lome-centre", "zone": "Lomé-Centre", "city": "Lomé", "aliases": ["lome centre", "lome-centre", "centre-ville lome"], "feeXof": 1000, "etaDays": 0 },
+  { "id": "togo-agoe-nyive", "zone": "Agoè-Nyivé", "city": "Lomé", "aliases": ["agoe", "agoe nyive", "agoe-nyive"], "feeXof": 1000, "etaDays": 1 },
+  { "id": "togo-be", "zone": "Bè", "city": "Lomé", "aliases": ["be"], "feeXof": 1000, "etaDays": 1 },
+  { "id": "togo-hedzranawoe", "zone": "Hedzranawoé", "city": "Lomé", "aliases": ["hedzranawoe"], "feeXof": 1000, "etaDays": 1 },
+  { "id": "togo-baguida", "zone": "Baguida", "city": "Lomé", "aliases": [], "feeXof": 1000, "etaDays": 1 },
+  { "id": "togo-tsevie", "zone": "Tsévié", "city": "Tsévié", "aliases": ["tsevie"], "feeXof": 2500, "etaDays": 1 },
+  { "id": "togo-kpalime", "zone": "Kpalimé", "city": "Kpalimé", "aliases": ["kpalime"], "feeXof": 2500, "etaDays": 1 },
+  { "id": "togo-vogan", "zone": "Vogan", "city": "Vogan", "aliases": [], "feeXof": 2500, "etaDays": 1 },
+  { "id": "togo-atakpame", "zone": "Atakpamé", "city": "Atakpamé", "aliases": ["atakpame"], "feeXof": 4500, "etaDays": 2 },
+  { "id": "togo-sokode", "zone": "Sokodé", "city": "Sokodé", "aliases": ["sokode"], "feeXof": 4500, "etaDays": 2 },
+  { "id": "togo-kara", "zone": "Kara", "city": "Kara", "aliases": [], "feeXof": 4500, "etaDays": 2 },
+  { "id": "togo-dapaong", "zone": "Dapaong", "city": "Dapaong", "aliases": ["dapaong"], "feeXof": 4500, "etaDays": 2 }
 ]
