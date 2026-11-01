@@ -62,6 +62,7 @@ function callFor(name: string, args: Record<string, unknown>, step: number): Too
 /**
  * Runner à règles déterministe : enchaîne les outils selon le plan et les résultats réels,
  * sans clé API. Il ne rédige la réponse finale qu'à partir des données renvoyées par les outils.
+ * Le plan (requête, quantité, lieu) reste neutre : il ne suppose ni motif ni couleur de pagne.
  */
 export function createRuleBasedLLM(plan: RuleBasedPlan): LLMClient {
   return {
@@ -83,7 +84,7 @@ export function createRuleBasedLLM(plan: RuleBasedPlan): LLMClient {
       const first = products[0];
       if (first === undefined) {
         return {
-          content: "Je n'ai trouvé aucun pagne correspondant. Pouvez-vous préciser la demande ?",
+          content: "Je n'ai trouvé aucun produit correspondant. Pouvez-vous préciser la demande (marque, modèle, usage, budget) ?",
           toolCalls: [],
         };
       }
