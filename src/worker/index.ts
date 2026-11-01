@@ -86,7 +86,7 @@ export const CONTEXT_TTL_SECONDS = 48 * 60 * 60;
 
 /** Réponses aux messages non textuels : une seule phrase, sans salutation répétée. */
 const NON_TEXT_REPLIES: Record<NonTextMediaType, string> = {
-  audio: "Nous ne pouvons traiter que les messages écrits. Merci de nous indiquer votre demande par écrit.",
+  audio: "Nous ne pouvons pas écouter le message vocal. Merci de nous indiquer votre demande par écrit, nous vous répondrons aussitôt.",
   image: "Nous ne pouvons traiter que les messages écrits. Merci de nous indiquer votre demande par écrit.",
   document: "Nous ne pouvons traiter que les messages écrits. Merci de nous indiquer votre demande par écrit.",
 };
