@@ -1,6 +1,7 @@
 /**
  * Tests du service LLM RodiumAI : max_tokens, température, gestion d'erreurs, extraction JSON,
- * et porte de repli (fallback). Aucun appel réseau : fetch est simulé. Exécution : pnpm run test:llm
+ * porte de repli (fallback) et reformulation (rephrase). Aucun appel réseau : fetch est simulé.
+ * Exécution : pnpm run test:llm
  */
 import {
   ADVICE_MAX_HISTORY,
@@ -9,12 +10,16 @@ import {
   DIALOGUE_TEMPERATURE,
   EXTRACTION_MAX_TOKENS,
   EXTRACTION_TEMPERATURE,
+  REPHRASE_MAX_TOKENS,
+  REPHRASE_TEMPERATURE,
   RODIUM_DEFAULT_BASE_URL,
   RODIUM_DEFAULT_MODEL,
   compactCatalog,
   createRodiumLlmService,
+  extractNumbers,
   parseJsonObject,
   readLlmConfig,
+  sameNumbers,
   shouldUseLlmFallback,
   type LlmChatMessage,
 } from "../src/services/llm-service";
@@ -81,6 +86,8 @@ async function check(name: string, fn: () => void | Promise<void>): Promise<void
     console.log(`  ${error instanceof Error ? error.message : String(error)}`);
   }
 }
+
+const RAW_QUOTE = "Le super wax vert coûte 12 500 FCFA. Livraison à Dantokpa : 1 000 FCFA, délai 2 jour(s). Total : 13 500 FCFA.";
 
 async function main(): Promise<void> {
   // Budget de tokens et température
@@ -253,6 +260,109 @@ async function main(): Promise<void> {
     assert.equal(shouldUseLlmFallback("product_inquiry"), false);
     assert.equal(shouldUseLlmFallback("delivery_inquiry"), false);
     assert.equal(shouldUseLlmFallback("order_request"), false);
+  });
+
+  // Reformulation : budget, garde-fou des chiffres, repli
+  await check("rephrase : max_tokens = 200 et température 0.3", async () => {
+    const calls: CapturedCall[] = [];
+    const llm = createRodiumLlmService({
+      apiKey: "k",
+      fetchImpl: fakeFetch(() => chatResponse("Votre total est de 13 500 FCFA."), calls),
+    });
+    await llm.rephrase(RAW_QUOTE);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.body.max_tokens, REPHRASE_MAX_TOKENS);
+    assert.equal(REPHRASE_MAX_TOKENS, 200);
+    assert.equal(calls[0]?.body.temperature, REPHRASE_TEMPERATURE);
+    assert.equal(REPHRASE_TEMPERATURE, 0.3);
+  });
+
+  await check("rephrase : le prompt impose le vouvoiement et l'interdiction d'ajouter une remise", async () => {
+    const calls: CapturedCall[] = [];
+    const llm = createRodiumLlmService({
+      apiKey: "k",
+      fetchImpl: fakeFetch(() => chatResponse("Votre total est de 13 500 FCFA."), calls),
+    });
+    await llm.rephrase(RAW_QUOTE, { customerMessage: "Combien ça coûte ?" });
+    const messages = calls[0]?.body.messages as LlmChatMessage[];
+    const system = messages[0]?.content ?? "";
+    assert.ok(system.includes("vouvoiement"), "vouvoiement absent du prompt");
+    assert.ok(system.includes("aucune remise"), "interdiction de remise absente du prompt");
+    const user = messages[1]?.content ?? "";
+    assert.ok(user.includes("Combien ça coûte ?"), "le message client doit être transmis en contexte");
+  });
+
+  await check("rephrase : reformulation avec mêmes chiffres acceptée", async () => {
+    const rephrased = "Le super wax vert est à 12 500 FCFA. Livraison : 1 000 FCFA, délai 2 jour(s). Total : 13 500 FCFA.";
+    const llm = createRodiumLlmService({
+      apiKey: "k",
+      fetchImpl: fakeFetch(() => chatResponse(rephrased), []),
+    });
+    assert.equal(await llm.rephrase(RAW_QUOTE), rephrased);
+  });
+
+  await check("rephrase : montant modifié rejeté, message d'origine renvoyé", async () => {
+    const llm = createRodiumLlmService({
+      apiKey: "k",
+      fetchImpl: fakeFetch(() => chatResponse("Le total est de 12 000 FCFA."), []),
+    });
+    assert.equal(await llm.rephrase(RAW_QUOTE), RAW_QUOTE);
+  });
+
+  await check("rephrase : remise inventée rejetée (chiffre ajouté)", async () => {
+    const llm = createRodiumLlmService({
+      apiKey: "k",
+      fetchImpl: fakeFetch(() => chatResponse("Profitez de 10% de remise : total 13 500 FCFA."), []),
+    });
+    assert.equal(await llm.rephrase(RAW_QUOTE), RAW_QUOTE);
+  });
+
+  await check("rephrase : erreur HTTP renvoie le message d'origine (pas d'exception)", async () => {
+    const llm = createRodiumLlmService({
+      apiKey: "k",
+      fetchImpl: fakeFetch(() => new Response("boom", { status: 503 }), []),
+    });
+    assert.equal(await llm.rephrase(RAW_QUOTE), RAW_QUOTE);
+  });
+
+  await check("rephrase : réponse vide renvoie le message d'origine", async () => {
+    const llm = createRodiumLlmService({
+      apiKey: "k",
+      fetchImpl: fakeFetch(() => chatResponse(null), []),
+    });
+    assert.equal(await llm.rephrase(RAW_QUOTE), RAW_QUOTE);
+  });
+
+  await check("rephrase : délai dépassé renvoie le message d'origine", async () => {
+    const llm = createRodiumLlmService({
+      apiKey: "k",
+      timeoutMs: 5,
+      fetchImpl: fakeFetch(
+        () =>
+          new Promise<Response>((_resolve, reject) => {
+            setTimeout(() => reject(new Error("aborted")), 50);
+          }),
+        [],
+      ),
+    });
+    assert.equal(await llm.rephrase(RAW_QUOTE), RAW_QUOTE);
+  });
+
+  await check("rephrase : message vide renvoyé sans appel réseau", async () => {
+    const calls: CapturedCall[] = [];
+    const llm = createRodiumLlmService({
+      apiKey: "k",
+      fetchImpl: fakeFetch(() => chatResponse("x"), calls),
+    });
+    assert.equal(await llm.rephrase("   "), "   ");
+    assert.equal(calls.length, 0);
+  });
+
+  await check("nombres : extraction et comparaison (espaces, séparateurs, FCFA)", () => {
+    assert.deepEqual(extractNumbers("12 500 FCFA et 1.000"), ["12500", "1000"]);
+    assert.ok(sameNumbers("12 500 FCFA", "12500 FCFA"), "même montant écrit autrement doit passer");
+    assert.ok(!sameNumbers("12 500 FCFA", "12 000 FCFA"), "montant différent doit échouer");
+    assert.ok(!sameNumbers("2 jours", "2 jours et 1 remise"), "chiffre ajouté doit échouer");
   });
 
   console.log(`\n${passed} réussi(s), ${failed} échec(s)`);
