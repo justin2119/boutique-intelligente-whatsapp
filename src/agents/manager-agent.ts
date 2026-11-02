@@ -6,10 +6,12 @@ import type {
   Delegation,
   DeliveryOption,
   Intent,
+  LaptopRecommendation,
   LogisticsResult,
   OrderDraft,
   Palier2Trace,
   SellerResult,
+  UseCase,
   ValidationDecision,
   ValidationRecord,
 } from "../types/palier2";
@@ -191,6 +193,9 @@ export class ManagerAgent {
     const freshResult = seller.recommend(message, quantity);
     // Vue d'ensemble : résumé par catégorie, calculé par le Vendeur (jamais par le LLM).
     const summaries: CategorySummary[] = browse ? seller.listCatalogSummary() : [];
+    // Usage annonce (etudes, bureautique...) sans produit precis : recommandations d'ordinateurs en stock.
+    const laptopRecs: LaptopRecommendation[] | null =
+      useCase !== null && !browse && intent !== "order_request" ? seller.recommendLaptops(useCase, budget) : null;
     // Recherche d'un autre produit : budget donné, ou demande d'alternative. Le produit refusé est exclu.
     const searchesOther = intent !== "order_request" && !browse && (budget !== null || wantsAlternative);
     let sellerResult: SellerResult;
@@ -237,12 +242,11 @@ export class ManagerAgent {
     const zoneTerm = detectZoneTerm(message, catalog.zones) ?? (hasContextProduct && !browse ? context.lastZoneTerm ?? null : null);
     let logisticsResult: LogisticsResult | null = null;
     if (zoneTerm !== null) {
-      const option2: DeliveryOption = option;
-      logisticsResult = logistics.quote(zoneTerm, option2);
+      logisticsResult = logistics.quote(zoneTerm, option);
       delegations.push({
         from: "manager",
         to: "logistics",
-        task: `Calculer la livraison (${option2}) vers « ${zoneTerm} »`,
+        task: `Calculer la livraison (${option}) vers « ${zoneTerm} »`,
         output: describeLogistics(logisticsResult),
       });
     }
@@ -258,6 +262,9 @@ export class ManagerAgent {
       intent = "order_request";
     }
 
+    if (laptopRecs !== null && optionsForFacts.length === 0) {
+      optionsForFacts = laptopRecs.map((rec) => rec.product);
+    }
     const slotForDraft = slot ?? context.lastSlot ?? null;
     let draft: OrderDraft | null = null;
     let validation: ValidationRecord | null = null;
@@ -283,10 +290,12 @@ export class ManagerAgent {
     const askZone = intent === "delivery_inquiry" && zoneTerm === null && sellerResult.kind === "not_found";
     const aggregated: AggregatedResponse = { intent, seller: sellerResult, logistics: logisticsResult, validation, draft };
     const deterministicMessage = browse
-      ? browseMessage(summaries)
+      ? formatter.composeCatalog(summaries)
       : askZone
         ? askForZoneMessage(catalog.zones)
-        : formatter.compose(aggregated);
+        : laptopRecs !== null && sellerResult.kind === "not_found"
+          ? formatter.composeLaptops(useCase as UseCase, laptopRecs, budget)
+          : formatter.compose(aggregated);
 
     // Le LLM rédige la conversation hors commande. Une commande ou une validation garde le gabarit strict.
     const isOrderTurn = validation !== null || intent === "order_request";
