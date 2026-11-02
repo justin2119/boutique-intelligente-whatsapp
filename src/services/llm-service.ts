@@ -253,6 +253,7 @@ const CONVERSE_SYSTEM = (facts: string): string =>
   "Pose au plus une question engageante à la fois, pour avancer (usage, budget, quartier ou repère de livraison, créneau). " +
   "Utilise uniquement les faits ci-dessous pour les produits, prix, stocks, frais et délais. " +
   "Quand les faits donnent un détail de commande (sous-total, frais de livraison, total général), donne ce détail et le total général tels quels, sans attendre. " +
+  "Ne répète jamais un prix unitaire, un sous-total, des frais de livraison ou un total déjà communiqués dans l'historique de la conversation, sauf si le client le demande ; passe directement à l'étape suivante (créneau, repère ou adresse, puis confirmation du total). " +
   "Ne dis jamais que tu vérifies un montant, que tu reviens vers le client, ni que l'équipe confirmera le total : tous les montants nécessaires sont dans les faits. " +
   "Si une information manque pour finaliser (repère ou adresse précise, créneau souhaité, quartier), demande-la clairement, sans la présenter comme une attente. " +
   "N'invente jamais de prix, de stock, de remise, de promotion, de cadeau ou de garantie absent des faits. " +
