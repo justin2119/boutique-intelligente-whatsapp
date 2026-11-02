@@ -175,7 +175,7 @@ Secrets (à définir avec `wrangler secret put` en production, ou dans `.dev.var
 - `GREEN_API_ID_INSTANCE` : identifiant de l'instance Green API. Les notifications d'une autre instance sont ignorées.
 - `GREEN_API_TOKEN_INSTANCE` : jeton de l'instance Green API.
 - `WEBHOOK_SECRET` : secret partagé vérifié sur chaque webhook. Recommandé en production.
-- `MANAGER_PHONE` : numéro du gérant au format international sans le signe plus (par exemple 22900000000). Requis pour la validation humaine.
+- `MANAGER_PHONE` : numéro du gérant au format international sans le signe plus (par exemple 22900000000). Valeur retenue : 22871061367. Requis pour la validation humaine.
 - `RODIUM_API_KEY` : clé RodiumAI, optionnelle. Sans elle, le repli LLM est désactivé.
 
 Modèle de configuration locale : `.dev.vars.example` (copier vers `.dev.vars`, ne jamais committer `.dev.vars`).
@@ -285,3 +285,7 @@ pnpm run deploy                  # déploiement sur Cloudflare
 ```
 
 Les secrets (identifiant et jeton d'instance Green API, secret du webhook, numéro du gérant, clé d'API RodiumAI) doivent être stockés dans `.dev.vars` en local et via `wrangler secret put` en production.
+
+## Contact
+
+Téléphone : +228 71 06 13 67
