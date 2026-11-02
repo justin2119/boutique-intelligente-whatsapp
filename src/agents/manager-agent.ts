@@ -1,14 +1,17 @@
 import type { Catalog, Product } from "../types";
 import type {
   AggregatedResponse,
+  CategorySummary,
   ConversationContext,
   Delegation,
   DeliveryOption,
   Intent,
+  LaptopRecommendation,
   LogisticsResult,
   OrderDraft,
   Palier2Trace,
   SellerResult,
+  UseCase,
   ValidationDecision,
   ValidationRecord,
 } from "../types/palier2";
@@ -17,7 +20,7 @@ import { HitlValidator } from "./hitl";
 import { LogisticsAgent, askForZoneMessage, detectZoneTerm } from "./logistics-agent";
 import { formatFcfa, normalizeText } from "./normalize";
 import { SellerAgent } from "./seller-agent";
-import { hasFabricTerm, hasTechTerm, parseBudget, parseSlot, stripBudget } from "./intent-terms";
+import { hasBrowseTerm, hasFabricTerm, hasTechTerm, parseBudget, parseSlot, parseUseCase, stripBudget } from "./intent-terms";
 import type { LlmChatMessage, RodiumLlmService } from "../services/llm-service";
 
 export interface ManagerDeps {
@@ -38,6 +41,17 @@ const PRODUCT_WORDS: readonly string[] = [
   "propose", "montrez", "avez", "voir", "quel", "quelle", "quels", "budget", "moins de", "usage", "besoin",
   "pour", "comparer", "comparaison", "difference", "meilleur", "vaut",
 ];
+
+/** Libellés clients des catégories du catalogue, dans l'ordre d'affichage. */
+export const CATEGORY_LABELS: Readonly<Record<string, string>> = {
+  wax_hollandais: "Wax hollandais",
+  super_wax: "Super wax",
+  vlisco: "Vlisco",
+  woodin: "Woodin",
+  kente: "Kente",
+  accessoire: "Accessoires",
+  ordinateur: "Ordinateurs",
+};
 
 /** Demande d'une autre option (« un autre », « autre chose », « pas celui-là », « un moins cher »). */
 const ALTERNATIVE_WORDS = /\b(un autre|une autre|autre chose|d autres?|autres? (?:modeles?|options?|propositions?|machines?|ordinateurs?)|pas celui|pas celle|moins cher|moins chere|plus abordable|autre modele|autre option)\b/;
@@ -67,11 +81,18 @@ const NUMBER_WORD_PATTERN = new RegExp(`\\b(\\d{1,3}|${Object.keys(FRENCH_NUMBER
  */
 const PROTECTED_CONTENT = /CMD-|VALIDER|REFUSER/i;
 
-/** Classe l'intention du message (règles déterministes, reproductibles hors ligne). */
+/**
+ * Classe l'intention du message (règles déterministes, reproductibles hors ligne).
+ * La demande de vue d'ensemble (« quels articles sont présents ? ») passe avant la recherche de produit,
+ * car elle contient souvent « quel », mot de recherche de produit.
+ */
 export function classifyIntent(message: string): Intent {
   const text = normalizeText(message);
   if (ORDER_WORDS.some((word) => text.includes(word))) {
     return "order_request";
+  }
+  if (hasBrowseTerm(message)) {
+    return "browse_catalog";
   }
   if (DELIVERY_WORDS.some((word) => text.includes(word))) {
     return "delivery_inquiry";
@@ -151,6 +172,8 @@ export class ManagerAgent {
     const events: string[] = [];
 
     let intent: Intent = classifyIntent(message);
+    // Vue d'ensemble du catalogue : pas de produit précis, donc aucun produit repris de la conversation.
+    const browse = intent === "browse_catalog";
     // Créneau donné par le client (« Créneau vers 15h », « 7h00-12h00 », « demain matin »).
     const slot = parseSlot(message);
     const quantity = mentionsQuantity(message) ? parseQuantity(message) : (context.lastQuantity ?? 1);
@@ -159,18 +182,33 @@ export class ManagerAgent {
     // Livraison standard par défaut : l'express n'est retenu que si le client le demande dans ce message.
     const option: DeliveryOption = explicitOption ?? "standard";
     const wantsAlternative = asksAlternative(message);
+    // Un usage annoncé (études, bureautique...) ouvre un nouveau sujet : on ne reprend pas l'ancien produit.
+    const useCase = parseUseCase(message);
     events.push(
-      `Manager : intention « ${intent} », quantité ${quantity}, budget ${budget ?? "non précisé"}, option de livraison ${option}, créneau ${slot ?? "non précisé"}, autre option ${wantsAlternative ? "demandée" : "non"}.`,
+      `Manager : intention « ${intent} », quantité ${quantity}, budget ${budget ?? "non précisé"}, option de livraison ${option}, créneau ${slot ?? "non précisé"}, autre option ${wantsAlternative ? "demandée" : "non"}, usage ${useCase ?? "non précisé"}.`,
     );
 
     const hasContextProduct = context.lastProductId !== undefined && context.lastProductId !== null;
     // Produit nouvellement cité dans le message (recherche par mots-clés, budget compris).
     const freshResult = seller.recommend(message, quantity);
+    // Vue d'ensemble : résumé par catégorie, calculé par le Vendeur (jamais par le LLM).
+    const summaries: CategorySummary[] = browse ? seller.listCatalogSummary() : [];
+    // Usage annonce (etudes, bureautique...) sans produit precis : recommandations d'ordinateurs en stock.
+    const laptopRecs: LaptopRecommendation[] | null =
+      useCase !== null && !browse && intent !== "order_request" ? seller.recommendLaptops(useCase, budget) : null;
     // Recherche d'un autre produit : budget donné, ou demande d'alternative. Le produit refusé est exclu.
-    const searchesOther = intent !== "order_request" && (budget !== null || wantsAlternative);
+    const searchesOther = intent !== "order_request" && !browse && (budget !== null || wantsAlternative);
     let sellerResult: SellerResult;
     let optionsForFacts: Product[] = [];
-    if (searchesOther) {
+    if (browse) {
+      sellerResult = { kind: "not_found", query: message };
+      delegations.push({
+        from: "manager",
+        to: "seller",
+        task: "Donner la vue d'ensemble du catalogue (catégories en stock)",
+        output: `${summaries.length} catégorie(s) en stock`,
+      });
+    } else if (searchesOther) {
       const excluded = wantsAlternative && context.lastProductId ? [context.lastProductId] : [];
       const pool = this.computerOptions(budget, excluded);
       optionsForFacts = pool;
@@ -182,9 +220,13 @@ export class ManagerAgent {
         output: pool.length > 0 ? `${pool.length} option(s), meilleure : ${pool[0].id}` : "aucune option sous ce budget",
       });
     } else {
-      // Sans nouveau produit cité, on reprend celui de la conversation (question de suivi, livraison, prix, usage, créneau).
+      // Sans nouveau produit cité, on reprend celui de la conversation (question de suivi, livraison, prix, créneau).
+      // Un usage annoncé ou une vue d'ensemble coupe ce lien : le client change de sujet.
       const reuseContext =
-        hasContextProduct && freshResult.kind === "not_found" && (intent !== "order_request" || slot !== null);
+        hasContextProduct &&
+        freshResult.kind === "not_found" &&
+        useCase === null &&
+        (intent !== "order_request" || slot !== null);
       sellerResult = reuseContext ? seller.byId(context.lastProductId as string, quantity) : freshResult;
       delegations.push({
         from: "manager",
@@ -196,7 +238,8 @@ export class ManagerAgent {
       });
     }
 
-    const zoneTerm = detectZoneTerm(message, catalog.zones) ?? (hasContextProduct ? context.lastZoneTerm ?? null : null);
+    // La zone de livraison de la conversation n'est reprise que pour une question de suivi, pas pour une vue d'ensemble.
+    const zoneTerm = detectZoneTerm(message, catalog.zones) ?? (hasContextProduct && !browse ? context.lastZoneTerm ?? null : null);
     let logisticsResult: LogisticsResult | null = null;
     if (zoneTerm !== null) {
       logisticsResult = logistics.quote(zoneTerm, option);
@@ -219,6 +262,9 @@ export class ManagerAgent {
       intent = "order_request";
     }
 
+    if (laptopRecs !== null && optionsForFacts.length === 0) {
+      optionsForFacts = laptopRecs.map((rec) => rec.product);
+    }
     const slotForDraft = slot ?? context.lastSlot ?? null;
     let draft: OrderDraft | null = null;
     let validation: ValidationRecord | null = null;
@@ -243,7 +289,13 @@ export class ManagerAgent {
     // Livraison demandée sans lieu précis : une seule question naturelle, sans liste.
     const askZone = intent === "delivery_inquiry" && zoneTerm === null && sellerResult.kind === "not_found";
     const aggregated: AggregatedResponse = { intent, seller: sellerResult, logistics: logisticsResult, validation, draft };
-    const deterministicMessage = askZone ? askForZoneMessage(catalog.zones) : formatter.compose(aggregated);
+    const deterministicMessage = browse
+      ? formatter.composeCatalog(summaries)
+      : askZone
+        ? askForZoneMessage(catalog.zones)
+        : laptopRecs !== null && sellerResult.kind === "not_found"
+          ? formatter.composeLaptops(useCase as UseCase, laptopRecs, budget)
+          : formatter.compose(aggregated);
 
     // Le LLM rédige la conversation hors commande. Une commande ou une validation garde le gabarit strict.
     const isOrderTurn = validation !== null || intent === "order_request";
@@ -263,6 +315,7 @@ export class ManagerAgent {
           optionsForFacts,
           wantsAlternative,
           slot: slotForDraft,
+          summaries: browse ? summaries : null,
         });
     const customerMessage = conversational ?? deterministicMessage;
     delegations.push({
@@ -271,7 +324,9 @@ export class ManagerAgent {
       task: conversational !== null ? "Rédiger la réponse conversationnelle (LLM, faits vérifiés)" : "Rédiger la réponse WhatsApp (gabarit)",
       output: `${customerMessage.length} caractères`,
     });
-    const orderPlaced = validation !== null || (freshResult.kind === "not_found" && context.orderPlaced === true);
+    // Une vue d'ensemble ne termine pas la commande en cours : le statut « commande passée » est conservé.
+    const keepsOrder = browse || freshResult.kind === "not_found";
+    const orderPlaced = validation !== null || (keepsOrder && context.orderPlaced === true);
     return {
       message,
       delegations,
@@ -324,6 +379,7 @@ export class ManagerAgent {
     readonly optionsForFacts: readonly Product[];
     readonly wantsAlternative: boolean;
     readonly slot: string | null;
+    readonly summaries: readonly CategorySummary[] | null;
   }): Promise<string | null> {
     const { llm, catalog } = this.deps;
     if (llm === undefined) {
@@ -371,6 +427,21 @@ export class ManagerAgent {
   }
 }
 
+/** Message déterministe de vue d'ensemble : une ligne par catégorie en stock, puis une question ouverte. */
+export function browseMessage(summaries: readonly CategorySummary[]): string {
+  if (summaries.length === 0) {
+    return "Nos articles sont actuellement en rupture. Indiquez-moi ce que vous cherchez, je vous tiendrai informé dès leur retour.";
+  }
+  const lines = summaries.map(
+    (s) => `• ${CATEGORY_LABELS[s.category] ?? s.category} : ${s.count} article(s), de ${formatFcfa(s.minPriceXof)} à ${formatFcfa(s.maxPriceXof)}`,
+  );
+  return [
+    "Voici les catégories disponibles en boutique :",
+    ...lines,
+    "Dites-moi ce qui vous intéresse : un tissu, un accessoire ou un ordinateur pour vos études, la bureautique ou la création.",
+  ].join("\n");
+}
+
 /** Montants calculés pour la commande (sous-total, total général) : autorisés dans la réponse du LLM. */
 function orderTotalsFor(
   sellerResult: SellerResult,
@@ -401,11 +472,20 @@ export function buildFacts(
     readonly optionsForFacts?: readonly Product[];
     readonly wantsAlternative?: boolean;
     readonly slot?: string | null;
+    readonly summaries?: readonly CategorySummary[] | null;
   },
   products: readonly Product[],
 ): string[] {
   const lines: string[] = [];
   const seller = input.sellerResult;
+  if (input.summaries !== undefined && input.summaries !== null) {
+    lines.push("Le client demande quels articles sont en boutique. Vue d'ensemble du catalogue en stock (à présenter, sans inventer d'autres articles) :");
+    for (const s of input.summaries) {
+      lines.push(`- ${CATEGORY_LABELS[s.category] ?? s.category} : ${s.count} article(s), de ${formatFcfa(s.minPriceXof)} à ${formatFcfa(s.maxPriceXof)}.`);
+    }
+    lines.push("Ne pas citer de produit précis : demander ce qui intéresse le client (tissu, accessoire ou ordinateur pour un usage).");
+    return lines;
+  }
   if (input.budget !== undefined && input.budget !== null) {
     lines.push(`Budget indiqué par le client : ${formatFcfa(input.budget)}.`);
   }

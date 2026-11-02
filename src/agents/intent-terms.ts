@@ -1,4 +1,5 @@
 import { normalizeText } from "./normalize";
+import type { UseCase } from "../types/palier2";
 
 /** Termes informatiques reconnus (mots entiers, texte normalisé sans accents). */
 export const TECH_TERMS: readonly string[] = [
@@ -16,6 +17,26 @@ export const FABRIC_TERMS: readonly string[] = [
   "wax", "pagne", "pagnes", "super", "vlisco", "kente", "woodin", "tissu", "motif", "motifs",
   "hollandais", "foulard", "sac", "boucles", "ceinture",
 ];
+
+/**
+ * Usages déclarés par le client, avec les mots qui les signalent (texte normalisé, mots entiers).
+ * « études » et « création » sont des usages distincts : un étudiant et un graphiste n'ont pas les mêmes besoins.
+ */
+export const USE_CASE_TERMS: Readonly<Record<UseCase, readonly string[]>> = {
+  etudes: ["etudes", "etude", "etudiant", "etudiante", "etudier", "ecole", "universite", "memoire", "exposes"],
+  bureautique: ["bureautique", "bureau", "word", "excel", "office", "travail", "professionnel", "entreprise"],
+  programmation: ["programmation", "developpement", "developpeur", "code", "coder", "dev"],
+  creation: ["creation", "graphisme", "graphique", "design", "photo", "photoshop", "montage", "video", "retouche"],
+  gaming: ["jeu", "jeux", "gaming", "gamer"],
+};
+
+/** Tous les mots-clés d'usage, normalisés, pour savoir si un message en porte un. */
+export const USE_CASE_KEYWORDS: ReadonlySet<string> = new Set(
+  Object.keys(USE_CASE_TERMS).reduce<string[]>(
+    (all, key) => all.concat(USE_CASE_TERMS[key as UseCase].map((term) => normalizeText(term))),
+    [],
+  ),
+);
 
 /** Synonymes courants : un mot du client est ramené aux termes utilisés dans le catalogue. */
 export const SYNONYMS: Readonly<Record<string, readonly string[]>> = {
@@ -43,6 +64,13 @@ const BUDGET_CURRENCY = /(\d{1,3}(?: \d{3})+|\d{4,9})\s*(?:fcfa|f cfa|cfa|francs
  */
 const SLOT_PATTERN = /\b(creneau|matin|apres[- ]?midi|soir|midi|demain|aujourd hui|\d{1,2} ?h(?:\d{2})?)\b/;
 
+/**
+ * Demande de vue d'ensemble du catalogue (texte normalisé) : « quels articles sont présents ? »,
+ * « qu'est-ce que vous avez ? », « que vendez-vous ? », « catalogue », « vos produits ».
+ */
+const BROWSE_PATTERN =
+  /\b(articles? (?:presents?|disponibles?)|quels? (?:sont )?(?:les )?(?:articles?|produits?)|qu est ce que vous (?:avez|vendez|proposez)|que (?:vendez|proposez|avez) vous|vous vendez quoi|catalogue|vos (?:produits|articles)|qu avez vous)\b/;
+
 function containsAnyWord(message: string, terms: readonly string[]): boolean {
   const text = ` ${normalizeText(message)} `;
   return terms.some((term) => text.includes(` ${normalizeText(term)} `));
@@ -57,6 +85,22 @@ export function hasTechTerm(message: string): boolean {
 /** Vrai si le message contient un tissu ou un accessoire du catalogue existant. */
 export function hasFabricTerm(message: string): boolean {
   return containsAnyWord(message, FABRIC_TERMS);
+}
+
+/** Vrai si le client demande à voir ce qui est disponible en boutique, sans produit précis. */
+export function hasBrowseTerm(message: string): boolean {
+  return BROWSE_PATTERN.test(normalizeText(message));
+}
+
+/** Usage déclaré dans le message (études, bureautique...), ou null. Le premier usage reconnu l'emporte. */
+export function parseUseCase(message: string): UseCase | null {
+  for (const key of Object.keys(USE_CASE_TERMS)) {
+    const useCase = key as UseCase;
+    if (containsAnyWord(message, USE_CASE_TERMS[useCase])) {
+      return useCase;
+    }
+  }
+  return null;
 }
 
 /** Budget maximum en FCFA, ou null. Les montants inférieurs à 10 000 FCFA sont ignorés. */

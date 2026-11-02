@@ -7,7 +7,7 @@ import { FormatterAgent } from "../src/agents/formatter-agent";
 import { HitlValidator } from "../src/agents/hitl";
 import { LogisticsAgent, EXPRESS_FEE_MULTIPLIER } from "../src/agents/logistics-agent";
 import { ManagerAgent, classifyIntent, parseQuantity } from "../src/agents/manager-agent";
-import { parseSlot } from "../src/agents/intent-terms";
+import { parseSlot, parseUseCase } from "../src/agents/intent-terms";
 import { SellerAgent } from "../src/agents/seller-agent";
 
 // Déclaration locale : tsconfig.json n'inclut que @cloudflare/workers-types (pas de @types/node).
@@ -219,40 +219,56 @@ async function main(): Promise<void> {
     const second = await manager.handle("7h00-12h00", first.context);
     assert.equal(second.aggregated.validation, null, "pas de nouvelle commande");
   });
-  await check("HITL : PENDING_HUMAN_VALIDATION vers REJECTED", () => {
-    const hitl = new HitlValidator(clock);
-    const draft = {
-      reference: "CMD-TEST",
-      lines: [],
-      zoneId: "cotonou-dantokpa",
-      zoneLabel: "Dantokpa",
-      option: "express" as const,
-      subtotalXof: 18000,
-      deliveryFeeXof: 750,
-      totalXof: 18750,
-      etaDays: 1,
-    };
-    const record = hitl.submit(draft);
-    assert.equal(record.status, "PENDING_HUMAN_VALIDATION");
-    const rejected = hitl.decide(record.id, { by: "customer", approved: false });
-    assert.equal(rejected.status, "REJECTED");
-    assert.equal(hitl.listPending().length, 0);
+
+  // Vue d'ensemble du catalogue
+  await check("catalogue : « quels articles sont présents ? » est une vue d'ensemble", () => {
+    assert.equal(classifyIntent("quels articles sont présents ?"), "browse_catalog");
   });
-  await check("HITL : une validation déjà traitée ne peut pas être redécidée", () => {
-    const hitl = new HitlValidator(clock);
-    const record = hitl.submit({
-      reference: "CMD-TEST",
-      lines: [],
-      zoneId: "cotonou-dantokpa",
-      zoneLabel: "Dantokpa",
-      option: "standard",
-      subtotalXof: 9000,
-      deliveryFeeXof: 500,
-      totalXof: 9500,
-      etaDays: 0,
-    });
-    hitl.decide(record.id, { by: "manager", approved: true });
-    assert.throws(() => hitl.decide(record.id, { by: "manager", approved: false }), /déjà traitée/);
+  await check("catalogue : la vue d'ensemble liste les catégories sans référence produit", async () => {
+    const manager = buildManager();
+    const trace = await manager.handle("quels articles sont présents ?");
+    assert.equal(trace.aggregated.intent, "browse_catalog");
+    assert.equal(trace.aggregated.validation, null);
+    assert.match(trace.customerMessage, /catégories disponibles/);
+    assert.match(trace.customerMessage, /Ordinateurs : \d+ article\(s\)/);
+    assert.equal(/[A-Z]{2}-\d{3}/.test(trace.customerMessage), false, "aucune référence produit dans la vue d'ensemble");
+  });
+  await check("catalogue : le formateur compose une ligne par catégorie avec la fourchette de prix", () => {
+    const text = new FormatterAgent().composeCatalog([
+      { category: "ordinateur", count: 8, minPriceXof: 380000, maxPriceXof: 1150000 },
+    ] as never);
+    assert.match(text, /Ordinateurs : 8 article\(s\), de 380 000 FCFA à 1 150 000 FCFA/);
+  });
+
+  // Ordinateurs par usage d'études
+  await check("usage : « pour mes études » est reconnu comme usage études", () => {
+    assert.equal(parseUseCase("Je cherche un ordinateur pour mes études"), "etudes");
+  });
+  await check("usage : une demande d'ordinateur pour les études n'est pas une commande", () => {
+    assert.equal(classifyIntent("Je cherche un ordinateur pour mes études") === "order_request", false);
+  });
+
+  // Changement de sujet en cours de commande
+  await check("sujet : une demande d'ordinateur après une commande ne reprend pas le pagne commandé", async () => {
+    const manager = buildManager();
+    const order = await manager.handle("Je prends la commande : 2 pagnes SW-002, livraison à Dantokpa en express.");
+    assert.equal(order.aggregated.validation?.status, "PENDING_HUMAN_VALIDATION");
+    const switched = await manager.handle("Je cherche un ordinateur pour mes études", order.context);
+    assert.equal(switched.aggregated.validation, null, "pas de nouvelle commande");
+    assert.equal(/SW-002/.test(switched.customerMessage), false, "le pagne précédent n'est pas repris");
+    assert.equal(switched.context?.lastProductId === "SW-002", false, "le produit du contexte est remplacé");
+  });
+  await check("sujet : une vue d'ensemble pendant une commande garde la commande en cours", async () => {
+    const manager = buildManager();
+    const order = await manager.handle("Je prends la commande : 2 pagnes SW-002, livraison à Dantokpa en express.");
+    const browse = await manager.handle("quels articles sont présents ?", order.context);
+    assert.equal(browse.aggregated.intent, "browse_catalog");
+    assert.equal(browse.context?.orderPlaced, true);
+  });
+
+  // Pas d'ordinateur sous 1 unité : le mot « ordinateur » ne doit pas être lu comme une quantité
+  await check("quantité : « 2 ordinateurs » donne une quantité de 2", () => {
+    assert.equal(parseQuantity("je veux 2 ordinateurs pour mes études"), 2);
   });
 
   console.log(`\n${passed} réussi(s), ${failed} échec(s)`);

@@ -1,6 +1,15 @@
-import type { AggregatedResponse, LogisticsResult, SellerResult, ValidationRecord } from "../types/palier2";
+import type {
+  AggregatedResponse,
+  CategorySummary,
+  LaptopRecommendation,
+  LogisticsResult,
+  SellerResult,
+  UseCase,
+  ValidationRecord,
+} from "../types/palier2";
 import { formatFcfa } from "./normalize";
 import { SALES_POLICY, policyLines, type SalesPolicy } from "./sales-policy";
+import { specsFor } from "./laptop-specs";
 
 /** Libellé du délai : « livraison le jour même » pour 0 jour, sinon « délai estimé N jour(s) ». */
 export function etaPhrase(etaDays: number): string {
@@ -10,6 +19,26 @@ export function etaPhrase(etaDays: number): string {
 /** Question de qualification, posée naturellement par un conseiller (jamais de formulaire). */
 export const DISCOVERY_QUESTION =
   "Pour vous orienter vers la machine adaptée, travaillez-vous plutôt en bureautique, en développement, en graphisme ou montage, pour des études ou pour le gaming ? Et quel budget envisagez-vous ?";
+
+/** Libellés clients des catégories du catalogue, dans l'ordre d'affichage. */
+export const CATEGORY_LABELS: Readonly<Record<string, string>> = {
+  wax_hollandais: "Wax hollandais",
+  super_wax: "Super wax",
+  vlisco: "Vlisco",
+  woodin: "Woodin",
+  kente: "Kente",
+  accessoire: "Accessoires",
+  ordinateur: "Ordinateurs",
+};
+
+/** Libellés clients des usages d'ordinateur (« pour vos études », « pour la bureautique »…). */
+export const USE_CASE_LABELS: Readonly<Record<UseCase, string>> = {
+  etudes: "vos études",
+  bureautique: "la bureautique",
+  programmation: "la programmation",
+  creation: "la création graphique et vidéo",
+  gaming: "le gaming",
+};
 
 /**
  * Agent Commercial : rédige UN message WhatsApp par tour, naturel et direct, en vouvoiement.
@@ -45,6 +74,47 @@ export class FormatterAgent {
       sections.push("Souhaitez-vous une livraison ? Indiquez-moi simplement votre quartier ou votre ville, je vous communique aussitôt les frais et le délai.");
     }
     return sections.join("\n\n");
+  }
+
+  /** Vue d'ensemble du catalogue : une ligne par catégorie en stock, puis une question ouverte. */
+  composeCatalog(summaries: readonly CategorySummary[]): string {
+    if (summaries.length === 0) {
+      return "Nos articles sont actuellement en rupture. Indiquez-moi ce que vous cherchez, je vous tiendrai informé dès leur retour.";
+    }
+    const lines = summaries.map(
+      (s) => `• ${CATEGORY_LABELS[s.category] ?? s.category} : ${s.count} article(s), de ${formatFcfa(s.minPriceXof)} à ${formatFcfa(s.maxPriceXof)}`,
+    );
+    return [
+      "Voici les catégories disponibles en boutique :",
+      ...lines,
+      "Dites-moi ce qui vous intéresse : un tissu, un accessoire ou un ordinateur pour vos études, la bureautique ou la création.",
+    ].join("\n");
+  }
+
+  /** Recommandations d'ordinateurs pour un usage : nom, prix, processeur, mémoire, stockage (3 au plus). */
+  composeLaptops(useCase: UseCase, recommendations: readonly LaptopRecommendation[], budget: number | null): string {
+    const budgetText = budget !== null ? ` sous ${formatFcfa(budget)}` : "";
+    if (recommendations.length === 0) {
+      return `Aucun ordinateur en stock pour ${USE_CASE_LABELS[useCase]}${budgetText} pour le moment. Voulez-vous que nous regardions un autre budget ?`;
+    }
+    const lines: string[] = [`Voici les ordinateurs en stock les mieux adaptés à ${USE_CASE_LABELS[useCase]}${budgetText} :`];
+    for (const rec of recommendations.slice(0, 3)) {
+      const product = rec.product;
+      lines.push("");
+      lines.push(`*${product.name}* (réf. ${product.id}) : ${formatFcfa(product.priceXof)}`);
+      const specs = specsFor(product.id);
+      if (specs !== undefined) {
+        lines.push(`• Processeur : ${specs.processor}`);
+        lines.push(`• Mémoire : ${specs.ram}`);
+        lines.push(`• Stockage : ${specs.storage}`);
+        if (specs.graphics !== undefined) {
+          lines.push(`• Carte graphique : ${specs.graphics}`);
+        }
+      }
+    }
+    lines.push("");
+    lines.push("Lequel vous intéresse ? Je peux aussi vous donner les frais de livraison vers votre quartier.");
+    return lines.join("\n");
   }
 }
 

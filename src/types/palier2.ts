@@ -1,13 +1,30 @@
-import type { DeliveryZone, Product } from "./index";
+import type { DeliveryZone, Product, ProductCategory } from "./index";
 
 export type AgentName = "manager" | "seller" | "logistics" | "formatter" | "hitl";
-export type Intent = "product_inquiry" | "delivery_inquiry" | "order_request" | "unknown";
+export type Intent = "product_inquiry" | "delivery_inquiry" | "order_request" | "browse_catalog" | "unknown";
 export type DeliveryOption = "standard" | "express";
+/** Usage déclaré par le client pour un ordinateur (études, bureautique, programmation, création, gaming). */
+export type UseCase = "etudes" | "bureautique" | "programmation" | "creation" | "gaming";
 
 export type SellerResult =
   | { readonly kind: "available"; readonly product: Product; readonly quantity: number; readonly subtotalXof: number }
   | { readonly kind: "out_of_stock"; readonly product: Product; readonly quantity: number; readonly alternatives: readonly Product[] }
   | { readonly kind: "not_found"; readonly query: string };
+
+/** Une ligne de la vue d'ensemble du catalogue : articles en stock d'une catégorie et fourchette de prix. */
+export interface CategorySummary {
+  readonly category: ProductCategory;
+  readonly count: number;
+  readonly minPriceXof: number;
+  readonly maxPriceXof: number;
+}
+
+/** Ordinateur recommandé pour un usage donné, avec son score de pertinence (nombre de critères correspondants). */
+export interface LaptopRecommendation {
+  readonly product: Product;
+  readonly useCase: UseCase;
+  readonly score: number;
+}
 
 export type LogisticsResult =
   | { readonly kind: "quoted"; readonly zone: DeliveryZone; readonly option: DeliveryOption; readonly feeXof: number; readonly etaDays: number }
