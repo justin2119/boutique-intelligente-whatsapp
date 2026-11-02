@@ -54,7 +54,7 @@ function sellerSection(result: SellerResult): string {
       return [
         "*Disponibilité confirmée*",
         `• Modèle : ${result.product.name} (réf. ${result.product.id})`,
-        `• Quantité : ${result.quantity} unité(s)`,
+        `• Quantité : ${result.quantity} ${unitLabel(result.product, result.quantity)}`,
         `• Prix unitaire : ${formatFcfa(result.product.priceXof)}`,
         `• Sous-total : ${formatFcfa(result.subtotalXof)}`,
         pitchFor(result.product.category, result.product.tags),
@@ -78,6 +78,18 @@ function sellerSection(result: SellerResult): string {
     case "not_found":
       return DISCOVERY_QUESTION;
   }
+}
+
+/**
+ * Libellé de l'unité de vente : « paire(s) » pour les boucles d'oreilles et autres articles vendus à la paire.
+ * « unité(s) » pour tous les autres produits, y compris les tissus. Le libellé vient du produit, jamais du client.
+ */
+export function unitLabel(product: { readonly sellUnit?: string; readonly description?: string; readonly name?: string }, quantity: number): string {
+  const text = `${product.name ?? ""} ${product.description ?? ""}`.toLowerCase();
+  if (/\bpaire\b|boucles? d.oreilles/.test(text)) {
+    return quantity > 1 ? "paires" : "paire";
+  }
+  return "unité(s)";
 }
 
 /** Argument commercial factuel selon la catégorie. */
