@@ -250,6 +250,11 @@ const CONVERSE_SYSTEM = (facts: string): string =>
   "Si le client demande une autre option, propose un autre modèle des faits, sans reprendre le précédent. " +
   "Si aucun produit ne correspond à son budget, dis-le franchement et propose le modèle le moins cher des faits. " +
   "Quand c'est utile, recommande la machine la plus adaptée à son usage et explique pourquoi en une phrase. " +
+  "Si les faits donnent une vue d'ensemble du catalogue (catégories et nombre d'articles), présente-la en phrases, " +
+  "sans citer de produit précis qui ne figure pas dans les faits, puis demande ce qui intéresse le client. " +
+  "Si les faits listent des ordinateurs avec leur fiche (processeur, mémoire, stockage, carte graphique), " +
+  "présente chacun en une phrase courte : nom, réf., prix en FCFA, puis processeur, mémoire et stockage, " +
+  "et l'usage recommandé. Recopie les fiches exactement telles que fournies, sans en inventer. " +
   "Pose au plus une question engageante à la fois, pour avancer (usage, budget, quartier ou repère de livraison, créneau). " +
   "Utilise uniquement les faits ci-dessous pour les produits, prix, stocks, frais et délais. " +
   "Quand les faits donnent un détail de commande (sous-total, frais de livraison, total général), donne ce détail et le total général tels quels, sans attendre. " +
