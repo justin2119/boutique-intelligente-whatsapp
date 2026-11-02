@@ -250,9 +250,28 @@ export function sanitizeContext(value: StoredContext): StoredContext {
 }
 
 /**
+ * Termes d'usage d'ordinateur (études, bureautique, programmation, création, gaming) : un client qui en parle
+ * ouvre un nouveau sujet, il ne précise pas la commande en cours. Texte sans accents, en minuscules.
+ */
+const USE_CASE_TERMS = /\b(etudes?|ecole|universite|cours|bureautique|programmation|developpement|code|graphisme|montage|creation|video|gaming|jeux?)\b/;
+
+/** Vrai si le message ne peut pas être une précision de livraison pour la commande en cours. */
+function opensNewTopic(text: string): boolean {
+  const plain = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  if (USE_CASE_TERMS.test(plain)) {
+    return true;
+  }
+  // Catalogue (« quels articles… »), produit recherché, ou autre demande : jamais une précision de commande.
+  // Les mots de livraison (adresse, quartier, zone, livraison) restent des précisions possibles.
+  const intent = classifyIntent(text);
+  return intent === "browse_catalog" || intent === "product_inquiry" || intent === "order_request";
+}
+
+/**
  * Suivi d'une commande déjà envoyée en validation : un créneau ou une précision du client
  * ne renvoie pas le devis. Le gérant est prévenu, le client reçoit un accusé dédié.
- * Renvoie null si le message ne relève pas d'un suivi (nouvelle demande produit, commande, etc.).
+ * Renvoie null si le message ne relève pas d'un suivi (nouvelle demande produit, catalogue, usage, commande, etc.) :
+ * il suit alors le traitement normal du Manager.
  */
 async function handleOrderFollowUp(
   message: IncomingTextMessage,
@@ -264,7 +283,7 @@ async function handleOrderFollowUp(
     return null;
   }
   const slot = parseSlot(message.text);
-  const isPrecision = slot === null && classifyIntent(message.text) === "unknown";
+  const isPrecision = slot === null && !opensNewTopic(message.text);
   if (slot === null && !isPrecision) {
     return null;
   }
