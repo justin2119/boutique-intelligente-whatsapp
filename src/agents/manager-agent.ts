@@ -12,7 +12,7 @@ import type {
   ValidationDecision,
   ValidationRecord,
 } from "../types/palier2";
-import { FormatterAgent, etaPhrase } from "./formatter-agent";
+import { FormatterAgent, etaPhrase, unitLabel as unitLabelFor } from "./formatter-agent";
 import { HitlValidator } from "./hitl";
 import { LogisticsAgent, askForZoneMessage, detectZoneTerm } from "./logistics-agent";
 import { formatFcfa, normalizeText } from "./normalize";
@@ -156,7 +156,8 @@ export class ManagerAgent {
     const quantity = mentionsQuantity(message) ? parseQuantity(message) : (context.lastQuantity ?? 1);
     const budget = parseBudget(message);
     const explicitOption: DeliveryOption | null = /express|urgent|vite|rapide/.test(normalizeText(message)) ? "express" : null;
-    const option: DeliveryOption = explicitOption ?? context.lastOption ?? "standard";
+    // Livraison standard par défaut : l'express n'est retenu que si le client le demande dans ce message.
+    const option: DeliveryOption = explicitOption ?? "standard";
     const wantsAlternative = asksAlternative(message);
     events.push(
       `Manager : intention « ${intent} », quantité ${quantity}, budget ${budget ?? "non précisé"}, option de livraison ${option}, créneau ${slot ?? "non précisé"}, autre option ${wantsAlternative ? "demandée" : "non"}.`,
@@ -415,7 +416,7 @@ export function buildFacts(
     lines.push(`Produit : ${seller.product.name} (réf. ${seller.product.id}), catégorie ${seller.product.category}.`);
     lines.push(`Disponibilité : en stock (${seller.product.stock} unité(s) disponible(s)).`);
     lines.push(`Prix unitaire : ${formatFcfa(seller.product.priceXof)}.`);
-    lines.push(`Quantité demandée : ${seller.quantity} unité(s).`);
+    lines.push(`Quantité demandée : ${seller.quantity} ${unitLabelFor(seller.product, seller.quantity)}.`);
     if (seller.product.tags.length > 0) {
       lines.push(`Caractéristiques : ${seller.product.tags.join(", ")}.`);
     }
@@ -461,13 +462,9 @@ export function buildFacts(
   if (seller.kind === "available" && logistics?.kind === "quoted") {
     const subtotal = seller.subtotalXof;
     const total = subtotal + logistics.feeXof;
+    // Une seule ligne par montant : pas de doublon (prix unitaire, sous-total, frais, total général).
     lines.push(
-      `Détail de la commande : ${seller.quantity} × ${formatFcfa(seller.product.priceXof)} = ${formatFcfa(subtotal)} pour les articles.`,
-    );
-    lines.push(`Frais de livraison : ${formatFcfa(logistics.feeXof)}.`);
-    lines.push(`Total général : ${formatFcfa(total)}.`);
-    lines.push(
-      `Sous-total articles : ${formatFcfa(subtotal)}, Frais de livraison : ${formatFcfa(logistics.feeXof)}, Total général : ${formatFcfa(total)}.`,
+      `Détail de la commande : ${seller.quantity} × ${formatFcfa(seller.product.priceXof)} = ${formatFcfa(subtotal)} pour les articles ; frais de livraison ${formatFcfa(logistics.feeXof)} ; total général ${formatFcfa(total)}.`,
     );
     lines.push("Le total est déjà calculé : le donner directement au client, sans dire qu'on le vérifie.");
     // Informations manquantes pour finaliser la commande.
